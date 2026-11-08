@@ -317,3 +317,153 @@ def test_classify_run_agy_exception_falls_back_to_other():
     assert items[0].id == "t3_err"
     assert items[0].section == "other"
     assert items[0].summary == "Error body text"
+
+
+def test_parse_reply_multiline_json_objects():
+    raw_text = """
+Some introductory text from the assistant.
+{
+  "id": "t3_multi1",
+  "section": "repo",
+  "confidence": 0.95,
+  "summary": "Multi-line JSON object parser"
+}
+Intermediate comment between items.
+{
+  "id": "t3_multi2",
+  "section": "game",
+  "confidence": 0.88,
+  "summary": "Indie game release"
+}
+"""
+    parsed = parse_reply(raw_text)
+    assert len(parsed) == 2
+    assert parsed["t3_multi1"] == ("repo", 0.95, "Multi-line JSON object parser")
+    assert parsed["t3_multi2"] == ("game", 0.88, "Indie game release")
+
+
+def test_parse_reply_multiline_json_array_in_code_fence():
+    raw_text = """```json
+[
+  {
+    "id": "t3_arr1",
+    "section": "knowledge",
+    "confidence": 0.9,
+    "summary": "Deep dive into model quantization"
+  },
+  {
+    "id": "t3_arr2",
+    "section": "money",
+    "confidence": 0.82,
+    "summary": "Monetizing AI generated content"
+  }
+]
+```"""
+    parsed = parse_reply(raw_text)
+    assert len(parsed) == 2
+    assert parsed["t3_arr1"] == ("knowledge", 0.9, "Deep dive into model quantization")
+    assert parsed["t3_arr2"] == ("money", 0.82, "Monetizing AI generated content")
+
+
+def test_parse_reply_section_aliases_and_headings():
+    raw_text = """
+{"id": "t3_1", "section": "Repo / Tool", "confidence": 0.95, "summary": "Tool repo"}
+{"id": "t3_2", "section": "Project / Showcase", "confidence": 0.9, "summary": "Project showcase"}
+{"id": "t3_3", "section": "Useful knowledge", "confidence": 0.85, "summary": "Useful article"}
+{"id": "t3_4", "section": "Money / content with AI", "confidence": 0.9, "summary": "Content AI"}
+{"id": "t3_5", "section": "IT career / abroad", "confidence": 0.88, "summary": "Abroad career"}
+{"id": "t3_6", "section": "qa-tools", "confidence": 0.92, "summary": "Quant setup Q&A"}
+{"id": "t3_7", "section": "Q&A about my tools", "confidence": 0.91, "summary": "Tool questions"}
+{"id": "t3_8", "section": "totally_random_thing", "confidence": 0.5, "summary": "Unknown"}
+"""
+    parsed = parse_reply(raw_text)
+    assert parsed["t3_1"][0] == "repo"
+    assert parsed["t3_2"][0] == "showcase"
+    assert parsed["t3_3"][0] == "knowledge"
+    assert parsed["t3_4"][0] == "money"
+    assert parsed["t3_5"][0] == "career"
+    assert parsed["t3_6"][0] == "qa_tools"
+    assert parsed["t3_7"][0] == "qa_tools"
+    assert parsed["t3_8"][0] == "other"
+
+
+def test_parse_reply_confidence_percentage_and_scaling():
+    p1 = _make_post(id="t3_pct", title="Pct Conf Drop")
+    p2 = _make_post(id="t3_int80", title="Int 80 Conf Drop")
+    p3 = _make_post(id="t3_int95", title="Int 95 Conf Drop")
+
+    def fake_agy(brief_text: str, label: str):
+        reply = "\n".join([
+            '{"id": "t3_pct", "section": "drop", "confidence": "85%", "summary": "Meme pct"}',
+            '{"id": "t3_int80", "section": "drop", "confidence": 80, "summary": "Meme int"}',
+            '{"id": "t3_int95", "section": "drop", "confidence": 95, "summary": "Spam int"}',
+        ])
+        return 0, reply
+
+    items = classify([p1, p2, p3], source="followed", run_agy=fake_agy)
+    # 85% = 0.85 < 0.9 -> other
+    assert items[0].section == "other"
+    # 80 = 0.80 < 0.9 -> other
+    assert items[1].section == "other"
+    # 95 = 0.95 >= 0.9 -> drop
+    assert items[2].section == "drop"
+
+
+def test_classify_collapses_whitespace_and_newlines_in_summary():
+    p1 = _make_post(id="t3_nl1", title="Title\nWith\nNewlines", body="Body line 1\n\nBody line 2")
+    p2 = _make_post(id="t3_nl2", title="Title Two", body="Fallback body")
+
+    def fake_agy(brief_text: str, label: str):
+        reply = '{"id": "t3_nl2", "section": "repo", "confidence": 0.95, "summary": "Line one\\nLine two\\n\\nLine three"}'
+        return 0, reply
+
+    items = classify([p1, p2], source="followed", run_agy=fake_agy)
+    # p1 falls back to clean body
+    assert "\n" not in items[0].summary
+    assert "\r" not in items[0].summary
+    assert "\n" not in items[0].title
+
+    # p2 uses model summary with newlines collapsed
+    assert "\n" not in items[1].summary
+    assert "\r" not in items[1].summary
+    assert items[1].summary == "Line one Line two Line three"
+
+
+def test_write_input_and_classify_none_fields(tmp_path: Path):
+    # Posts with None fields should never produce the string "None"
+    class NonePost:
+        id = "t3_none"
+        sub = None
+        title = None
+        body = None
+        url = None
+        link = ""
+
+    out_file = tmp_path / "none_post.jsonl"
+    write_input([NonePost()], out_file)
+    data = json.loads(out_file.read_text(encoding="utf-8").strip())
+    assert data["id"] == "t3_none"
+    assert data["sub"] == ""
+    assert data["title"] == ""
+    assert data["body"] == ""
+
+    def fake_agy(brief_text: str, label: str):
+        return 0, ""
+
+    items = classify([NonePost()], source="followed", run_agy=fake_agy)
+    assert items[0].id == "t3_none"
+    assert items[0].sub == ""
+    assert items[0].title == ""
+    assert items[0].url == ""
+    assert items[0].link is None
+    assert items[0].section == "other"
+
+
+def test_classify_empty_string_link_normalized_to_none():
+    p = _make_post(id="t3_empty_link", link="")
+
+    def fake_agy(brief_text: str, label: str):
+        return 0, '{"id": "t3_empty_link", "section": "repo", "confidence": 0.9, "summary": "Test"}'
+
+    items = classify([p], source="followed", run_agy=fake_agy)
+    assert items[0].link is None

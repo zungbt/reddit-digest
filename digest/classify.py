@@ -25,6 +25,44 @@ SECTIONS: dict[str, str] = {
     "drop": "(not rendered)",
 }
 
+SECTION_ALIASES: dict[str, str] = {
+    "repo": "repo",
+    "showcase": "showcase",
+    "knowledge": "knowledge",
+    "money": "money",
+    "career": "career",
+    "game": "game",
+    "qa_tools": "qa_tools",
+    "other": "other",
+    "drop": "drop",
+    # Headings and common variants from model output
+    "repo / tool": "repo",
+    "repo/tool": "repo",
+    "tool": "repo",
+    "tools": "repo",
+    "project / showcase": "showcase",
+    "project/showcase": "showcase",
+    "project": "showcase",
+    "useful knowledge": "knowledge",
+    "money / content with ai": "money",
+    "money / content": "money",
+    "money/content": "money",
+    "it career / abroad": "career",
+    "it career": "career",
+    "career / abroad": "career",
+    "career/abroad": "career",
+    "games": "game",
+    "qa_tool": "qa_tools",
+    "qa-tools": "qa_tools",
+    "qa-tool": "qa_tools",
+    "qa tools": "qa_tools",
+    "qatools": "qa_tools",
+    "q&a about my tools": "qa_tools",
+    "q&a about tools": "qa_tools",
+    "q&a tools": "qa_tools",
+    "q&a": "qa_tools",
+}
+
 BATCH_SIZE = 150
 CALIB_BRIEF_PATH = ROOT / "docs" / "calib-brief.txt"
 AGY_SCRIPT = pathlib.Path.home() / ".claude" / "skills" / "agy" / "agy-run-win.sh"
@@ -64,27 +102,37 @@ class Item:
     source: str
 
 
+def _clean_str(val: Any) -> str:
+    if val is None:
+        return ""
+    return str(val)
+
+
+def _collapse_spaces(text: str) -> str:
+    return " ".join(text.split())
+
+
 def write_input(posts: Sequence[Any], path: pathlib.Path | str) -> None:
     p = pathlib.Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
         for post in posts:
             if isinstance(post, dict):
-                post_id = post.get("id", "")
-                sub = post.get("sub", "")
-                title = post.get("title", "")
-                body = post.get("body", "") or ""
+                post_id = _clean_str(post.get("id"))
+                sub = _clean_str(post.get("sub"))
+                title = _clean_str(post.get("title"))
+                body = _clean_str(post.get("body"))
             else:
-                post_id = getattr(post, "id", "")
-                sub = getattr(post, "sub", "")
-                title = getattr(post, "title", "")
-                body = getattr(post, "body", "") or ""
+                post_id = _clean_str(getattr(post, "id", None))
+                sub = _clean_str(getattr(post, "sub", None))
+                title = _clean_str(getattr(post, "title", None))
+                body = _clean_str(getattr(post, "body", None))
 
             entry = {
-                "id": str(post_id),
-                "sub": str(sub),
-                "title": str(title),
-                "body": str(body)[:600],
+                "id": post_id,
+                "sub": sub,
+                "title": title,
+                "body": body[:600],
             }
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -98,7 +146,11 @@ def brief(input_rel: str) -> str:
             pass
 
     normalized_input = str(input_rel).replace("\\", "/")
-    res = template.replace("work/calib/batchN.jsonl", normalized_input)
+    if "work/calib/batchN.jsonl" in template:
+        res = template.replace("work/calib/batchN.jsonl", normalized_input)
+    else:
+        res = re.sub(r"(Input:\s*)\S+", rf"\g<1>{normalized_input}", template)
+
     if len(res.encode("utf-8")) > 30000:
         raise ValueError(f"Brief size exceeds 30000 bytes: {len(res.encode('utf-8'))}")
     return res
@@ -115,18 +167,27 @@ def _parse_entry_dict(data: Any) -> tuple[str, tuple[str, float, str]] | None:
         return None
 
     raw_sec = data.get("section")
-    sec = str(raw_sec).strip().lower() if raw_sec is not None else "other"
+    sec_candidate = str(raw_sec).strip().lower() if raw_sec is not None else "other"
+    sec = SECTION_ALIASES.get(sec_candidate, "other")
     if sec not in SECTIONS:
         sec = "other"
 
     raw_conf = data.get("confidence")
+    if isinstance(raw_conf, str):
+        raw_conf = raw_conf.strip().rstrip("%")
     try:
         conf = float(raw_conf) if raw_conf is not None else 0.0
     except (ValueError, TypeError):
         conf = 0.0
 
+    if conf > 1.0 and conf <= 100.0:
+        conf = conf / 100.0
+    conf = max(0.0, min(1.0, conf))
+
     raw_sum = data.get("summary")
-    summary = str(raw_sum).strip() if raw_sum is not None else ""
+    summary = _collapse_spaces(str(raw_sum)) if raw_sum is not None else ""
+    if summary in ("None", "null"):
+        summary = ""
 
     return post_id, (sec, conf, summary)
 
@@ -138,18 +199,38 @@ def parse_reply(text: str) -> dict[str, tuple[str, float, str]]:
     results: dict[str, tuple[str, float, str]] = {}
     cleaned = text.strip()
 
-    if cleaned.startswith("[") and cleaned.endswith("]"):
-        try:
-            arr = json.loads(cleaned)
-            if isinstance(arr, list):
-                for item in arr:
-                    entry = _parse_entry_dict(item)
+    # 1. First attempt: Use JSONDecoder to scan for all JSON objects / arrays across the entire text
+    decoder = json.JSONDecoder()
+    idx = 0
+    length = len(cleaned)
+    found_any = False
+
+    while idx < length:
+        ch = cleaned[idx]
+        if ch in ("{", "["):
+            try:
+                obj, end_idx = decoder.raw_decode(cleaned, idx)
+                idx = end_idx
+                if isinstance(obj, list):
+                    for item in obj:
+                        entry = _parse_entry_dict(item)
+                        if entry is not None:
+                            results[entry[0]] = entry[1]
+                            found_any = True
+                elif isinstance(obj, dict):
+                    entry = _parse_entry_dict(obj)
                     if entry is not None:
                         results[entry[0]] = entry[1]
-                return results
-        except Exception:
-            pass
+                        found_any = True
+                continue
+            except (json.JSONDecodeError, ValueError):
+                pass
+        idx += 1
 
+    if found_any:
+        return results
+
+    # 2. Fallback: line-by-line parsing (for lines with embedded JSON)
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -185,6 +266,9 @@ def _find_bash() -> str:
         pathlib.Path("C:/Program Files/Git/usr/bin/bash.exe"),
         pathlib.Path(os.environ.get("PROGRAMFILES", "C:\\Program Files")) / "Git" / "bin" / "bash.exe",
     ]
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(pathlib.Path(local_app_data) / "Programs" / "Git" / "bin" / "bash.exe")
     for c in candidates:
         if c.exists():
             return str(c)
@@ -262,6 +346,7 @@ def classify(
     if not posts:
         return []
 
+    norm_source = str(source).strip().lower()
     items: list[Item] = []
     tmp_dir = WORK / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -269,7 +354,7 @@ def classify(
     for i in range(0, len(posts), BATCH_SIZE):
         batch = posts[i : i + BATCH_SIZE]
         batch_idx = i // BATCH_SIZE
-        label = f"classify-{source}-{batch_idx}-{uuid.uuid4().hex[:8]}"
+        label = f"classify-{norm_source}-{batch_idx}-{uuid.uuid4().hex[:8]}"
 
         batch_file = tmp_dir / f"{label}.jsonl"
         try:
@@ -277,7 +362,10 @@ def classify(
             try:
                 rel_path = batch_file.relative_to(ROOT).as_posix()
             except ValueError:
-                rel_path = os.path.relpath(batch_file, ROOT).replace("\\", "/")
+                try:
+                    rel_path = os.path.relpath(batch_file, ROOT).replace("\\", "/")
+                except ValueError:
+                    rel_path = batch_file.as_posix()
 
             brief_text = brief(rel_path)
             try:
@@ -297,32 +385,36 @@ def classify(
 
         for post in batch:
             if isinstance(post, dict):
-                p_id = str(post.get("id", ""))
-                p_sub = str(post.get("sub", ""))
-                p_title = str(post.get("title", ""))
-                raw_body = post.get("body", "") or ""
-                p_url = str(post.get("url", ""))
+                p_id = _clean_str(post.get("id"))
+                p_sub = _clean_str(post.get("sub"))
+                p_title = _clean_str(post.get("title"))
+                raw_body = _clean_str(post.get("body"))
+                p_url = _clean_str(post.get("url"))
                 p_link = post.get("link")
             else:
-                p_id = str(getattr(post, "id", ""))
-                p_sub = str(getattr(post, "sub", ""))
-                p_title = str(getattr(post, "title", ""))
-                raw_body = getattr(post, "body", "") or ""
-                p_url = str(getattr(post, "url", ""))
+                p_id = _clean_str(getattr(post, "id", None))
+                p_sub = _clean_str(getattr(post, "sub", None))
+                p_title = _clean_str(getattr(post, "title", None))
+                raw_body = _clean_str(getattr(post, "body", None))
+                p_url = _clean_str(getattr(post, "url", None))
                 p_link = getattr(post, "link", None)
 
-            clean_body = str(raw_body).strip()
-            clean_title = p_title.strip()
-            fallback_summary = clean_body[:200] if clean_body else clean_title
+            clean_body = raw_body.replace("\r", " ").replace("\n", " ")
+            clean_title = _collapse_spaces(p_title)
+            fallback_summary = clean_body[:200] if clean_body.strip() else clean_title
+
+            if p_link is not None:
+                p_link_str = str(p_link).strip()
+                p_link = p_link_str if p_link_str else None
 
             if p_id in parsed:
                 sec, conf, summ = parsed[p_id]
-                if source == "followed" and sec == "drop" and conf < 0.9:
+                if norm_source == "followed" and sec == "drop" and conf < 0.9:
                     sec = "other"
                 if not summ or not summ.strip():
                     summ = fallback_summary
                 else:
-                    summ = summ.strip()
+                    summ = _collapse_spaces(summ)
             else:
                 sec = "other"
                 summ = fallback_summary
@@ -331,12 +423,12 @@ def classify(
                 Item(
                     id=p_id,
                     sub=p_sub,
-                    title=p_title,
+                    title=clean_title,
                     url=p_url,
                     link=p_link,
                     section=sec,
                     summary=summ,
-                    source=source,
+                    source=norm_source,
                 )
             )
 
