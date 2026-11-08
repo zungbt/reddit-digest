@@ -1,0 +1,21 @@
+Read-only run. Do NOT write files, commit, or push. Use built-in read tools only (no shell).
+
+Task: classify Reddit posts for a personal "idea digest" of a Vietnamese developer (local LLMs, AI coding agents like Claude Code/Antigravity, game dev/3D, embedded/FPGA/PCB, security, IT career).
+
+Input: work/calib/batchN.jsonl — one JSON per line: id, sub, title, body (body may be empty; then judge from title + sub).
+
+Sections (pick exactly one per post):
+- repo: a repo, tool, library, model or app release
+- game: a game or game-dev showcase
+- showcase: "I built X" / project the author made (non-game)
+- knowledge: benchmark, comparison, workflow experiment, technique, explanation
+- qa_tools: question/answer about tools the user uses (quantization, local models, coding agents, hardware setup) — KEEP these
+- career: IT career, job market, working/living abroad
+- money: making money or content with AI (UGC ads, faceless YouTube, digital products)
+- other: does not fit above but is not noise
+- drop: ONLY memes, jokes, info-less rants, hiring/self-promo spam, unrelated entertainment
+When unsure between drop and anything else, do NOT drop — use other.
+
+Output: ONLY JSON lines, one per input id, nothing else:
+{"id":"t3_...","section":"...","confidence":0.0-1.0,"summary":"1 sentence, same language as the title"}
+Every input id must appear exactly once.
