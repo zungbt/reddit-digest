@@ -200,9 +200,9 @@
 **Interfaces:**
 - Produces: `summarize(lines: list[dict]) -> str` (markdown) and `python -m digest review` (prints it).
 - Report (v1 groups by sub and by section only — no flair): per sub and per section: keep / reject / neutral / auto-drop counts; groups with ≥ 10 marks and 0 keeps listed as **proposed drop rules**; auto-dropped titles from the last 14 days listed for wrong-drop check. Proposals only — no rule file is written.
-- [ ] **Step 1: Failing tests:** counts per group; proposal appears for 12 rejects / 0 keeps; no proposal for 12 rejects / 1 keep; empty log → "no feedback yet".
-- [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → PASS.
-- [ ] **Step 5: Commit** `feat: review command`.
+- [x] **Step 1: Failing tests:** counts per group; proposal appears for 12 rejects / 0 keeps; no proposal for 12 rejects / 1 keep; empty log → "no feedback yet".
+- [x] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → PASS.
+- [x] **Step 5: Commit** `feat: review command`.
 
 ### Task 9: Nightly schedule
 
@@ -211,6 +211,6 @@
 - Modify: `README.md` (create: how to run, mark, review, install task)
 
 - `install-task.ps1`: `Register-ScheduledTask -TaskName "reddit-digest"` daily 21:00, current user, `-Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1))`, action `powershell -ExecutionPolicy Bypass -File <repo>\scripts\run-digest.ps1`.
-- [ ] **Step 1:** Parse-check both scripts with `[System.Management.Automation.Language.Parser]::ParseFile` → 0 errors.
-- [ ] **Step 2 (user):** run `install-task.ps1`, then `Start-ScheduledTask reddit-digest`; after it ends, `Get-ScheduledTaskInfo reddit-digest` shows `LastTaskResult 0` and a new digest exists.
-- [ ] **Step 3: Commit** `feat: nightly task scheduler job`.
+- [x] **Step 1:** Parse-check both scripts with `[System.Management.Automation.Language.Parser]::ParseFile` → 0 errors.
+- [x] **Step 2 (user):** run `install-task.ps1`, then `Start-ScheduledTask reddit-digest`; after it ends, `Get-ScheduledTaskInfo reddit-digest` shows `LastTaskResult 0` and a new digest exists.
+- [x] **Step 3: Commit** `feat: nightly task scheduler job`.
