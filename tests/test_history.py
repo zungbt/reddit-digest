@@ -431,3 +431,29 @@ def test_deterministic_sort_order_with_identical_timestamps(tmp_path):
     ids = [v.id for v in viewed]
     # Sorted by (visited, id) descending -> ccc, bbb, aaa
     assert ids == ["t3_ccc", "t3_bbb", "t3_aaa"]
+
+
+def test_viewed_since_max_age_days(tmp_path):
+    profile_dir = tmp_path / "profile"
+    db_file = profile_dir / "places.sqlite"
+
+    import time
+    now_us = int(time.time() * 1_000_000)
+    old_visit_us = now_us - 45 * 86400 * 1_000_000  # 45 days ago
+    recent_visit_us = now_us - 5 * 86400 * 1_000_000  # 5 days ago
+
+    places = [
+        (1, "https://www.reddit.com/r/sub/comments/old/title/", "Old Post : r/sub"),
+        (2, "https://www.reddit.com/r/sub/comments/recent/title/", "Recent Post : r/sub"),
+    ]
+    visits = [
+        (101, 1, old_visit_us),
+        (102, 2, recent_visit_us),
+    ]
+    create_history_db(db_file, places, visits)
+
+    # With max_age_days=30, only recent post should be returned
+    viewed, counts, max_us = viewed_since(0, profile=profile_dir, tmp=tmp_path / "scratch", max_age_days=30)
+    assert len(viewed) == 1
+    assert viewed[0].id == "t3_recent"
+    assert counts == {"sub": 1}

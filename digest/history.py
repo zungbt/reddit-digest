@@ -70,9 +70,17 @@ def viewed_since(
     since_us: int,
     profile: pathlib.Path | str = PROFILE,
     tmp: pathlib.Path | str = WORK / "tmp",
+    max_age_days: int | None = None,
 ) -> tuple[list[Viewed], dict[str, int], int]:
     if isinstance(since_us, bool) or not isinstance(since_us, int) or since_us < 0:
         raise ValueError(f"'since_us' must be a non-negative int, got {since_us!r}")
+
+    query_cutoff = since_us
+    if max_age_days is not None and max_age_days > 0:
+        now_us = int(time.time() * 1_000_000)
+        min_allowed_us = now_us - int(max_age_days * 86400 * 1_000_000)
+        if query_cutoff < min_allowed_us:
+            query_cutoff = min_allowed_us
 
     profile_path = pathlib.Path(profile)
     if profile_path.is_file() or profile_path.suffix.lower() in (".sqlite", ".db"):
@@ -138,11 +146,11 @@ def viewed_since(
             "  AND p.url LIKE '%reddit.com/r/%/comments%' "
             "ORDER BY v.visit_date ASC"
         )
-        cursor.execute(query, (since_us,))
+        cursor.execute(query, (query_cutoff,))
 
         posts_by_id: dict[str, Viewed] = {}
         counts: dict[str, int] = {}
-        max_us = since_us
+        max_us = max(since_us, query_cutoff)
 
         for url, title, visit_date in cursor.fetchall():
             parsed = parse_reddit_comment_url(url)

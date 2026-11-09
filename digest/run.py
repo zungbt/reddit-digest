@@ -60,6 +60,7 @@ class Deps:
     waterfox_profile: pathlib.Path = PROFILE
     tmp_dir: pathlib.Path | None = None
     deadline_seconds: float = 45 * 60.0
+    max_age_days: int | None = 30
 
     def __post_init__(self) -> None:
         self.work_dir = pathlib.Path(self.work_dir)
@@ -177,16 +178,27 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
 
     # 5. Viewed posts since state.history_since
     try:
-        viewed_posts, sub_counts, max_us = deps.viewed(
-            state.history_since,
-            profile=deps.waterfox_profile,
-            tmp=deps.tmp_dir,
-        )
+        try:
+            viewed_posts, sub_counts, max_us = deps.viewed(
+                state.history_since,
+                profile=deps.waterfox_profile,
+                tmp=deps.tmp_dir,
+                max_age_days=deps.max_age_days,
+            )
+        except TypeError:
+            viewed_posts, sub_counts, max_us = deps.viewed(
+                state.history_since,
+                profile=deps.waterfox_profile,
+                tmp=deps.tmp_dir,
+            )
     except Exception as e:
         viewed_posts, sub_counts, max_us = [], {}, state.history_since
         warn_msg = f"Waterfox history unavailable: {e}"
         warnings.append(warn_msg)
         _log(deps.log_path, f"{date_str} {warn_msg}")
+
+    cutoff_dt = datetime.combine(today_date, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=deps.max_age_days or 30)
+    cutoff_us = int(cutoff_dt.timestamp() * 1_000_000)
 
     # 6. Drop ids in state.seen, then viewed ids already in followed
     filtered_followed: list[Post] = []
@@ -195,6 +207,10 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
     for post in all_fetched_posts:
         if not post.id:
             continue
+        if deps.max_age_days and post.published:
+            p_dt = _parse_iso(post.published)
+            if p_dt is not None and p_dt < cutoff_dt:
+                continue
         if post.id in state.seen:
             continue
         if post.id in seen_this_run:
@@ -205,6 +221,8 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
     filtered_viewed: list[Viewed] = []
     for v in viewed_posts:
         if not v.id:
+            continue
+        if deps.max_age_days and v.visited > 100_000_000_000 and v.visited < cutoff_us:
             continue
         if v.id in state.seen:
             continue
