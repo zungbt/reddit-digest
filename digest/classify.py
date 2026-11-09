@@ -1,4 +1,5 @@
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import json
 import os
@@ -63,7 +64,9 @@ SECTION_ALIASES: dict[str, str] = {
     "q&a": "qa_tools",
 }
 
-BATCH_SIZE = 150
+BATCH_SIZE = 50
+AGY_LEVEL = "high"
+MAX_WORKERS = 3
 CALIB_BRIEF_PATH = ROOT / "docs" / "calib-brief.txt"
 AGY_SCRIPT = pathlib.Path.home() / ".claude" / "skills" / "agy" / "agy-run-win.sh"
 
@@ -275,7 +278,7 @@ def _find_bash() -> str:
     return "bash"
 
 
-def agy_run(brief: str, label: str) -> tuple[int, str]:
+def agy_run(brief: str, label: str, level: str = AGY_LEVEL) -> tuple[int, str]:
     clean_label = re.sub(r"[^a-z0-9-]", "", label.lower())
     if not clean_label:
         clean_label = f"digest-{int(time.time())}"
@@ -287,7 +290,7 @@ def agy_run(brief: str, label: str) -> tuple[int, str]:
     cmd = [
         bash_bin,
         str(AGY_SCRIPT.as_posix()),
-        "low",
+        level,
         str(ROOT.as_posix()),
         clean_label,
     ]
@@ -342,20 +345,24 @@ def classify(
     posts: Sequence[Any],
     source: str,
     run_agy: Callable[[str, str], tuple[int, str]] = agy_run,
+    batch_size: int = BATCH_SIZE,
+    max_workers: int = MAX_WORKERS,
 ) -> list[Item]:
     if not posts:
         return []
 
     norm_source = str(source).strip().lower()
-    items: list[Item] = []
     tmp_dir = WORK / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    for i in range(0, len(posts), BATCH_SIZE):
-        batch = posts[i : i + BATCH_SIZE]
-        batch_idx = i // BATCH_SIZE
-        label = f"classify-{norm_source}-{batch_idx}-{uuid.uuid4().hex[:8]}"
+    batches = [
+        (i // batch_size, posts[i : i + batch_size])
+        for i in range(0, len(posts), batch_size)
+    ]
 
+    def _process_batch(batch_tuple: tuple[int, Sequence[Any]]) -> list[Item]:
+        batch_idx, batch = batch_tuple
+        label = f"classify-{norm_source}-{batch_idx}-{uuid.uuid4().hex[:8]}"
         batch_file = tmp_dir / f"{label}.jsonl"
         try:
             write_input(batch, batch_file)
@@ -383,6 +390,7 @@ def classify(
         else:
             parsed = parse_reply(reply)
 
+        batch_items: list[Item] = []
         for post in batch:
             if isinstance(post, dict):
                 p_id = _clean_str(post.get("id"))
@@ -419,7 +427,7 @@ def classify(
                 sec = "other"
                 summ = fallback_summary
 
-            items.append(
+            batch_items.append(
                 Item(
                     id=p_id,
                     sub=p_sub,
@@ -431,5 +439,15 @@ def classify(
                     source=norm_source,
                 )
             )
+        return batch_items
+
+    items: list[Item] = []
+    if len(batches) <= 1 or max_workers <= 1:
+        for b in batches:
+            items.extend(_process_batch(b))
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for batch_result in executor.map(_process_batch, batches):
+                items.extend(batch_result)
 
     return items

@@ -201,13 +201,12 @@ def test_agy_failure_all_other():
     assert items[1].source == "followed"
 
 
-def test_batches_of_150():
+def test_batches_of_50():
     posts = [_make_post(id=f"t3_{i}", title=f"Post {i}") for i in range(320)]
     agy_calls = []
 
     def recording_agy(brief_text: str, label: str):
         agy_calls.append((brief_text, label))
-        # Return empty lines or valid dummy replies
         lines = [
             f'{{"id": "t3_{i}", "section": "repo", "confidence": 0.9, "summary": "Post {i}"}}'
             for i in range(320)
@@ -215,10 +214,31 @@ def test_batches_of_150():
         return 0, "\n".join(lines)
 
     items = classify(posts, source="followed", run_agy=recording_agy)
-    assert len(agy_calls) == 3
+    assert len(agy_calls) == 7
     assert len(items) == 320
     assert items[0].id == "t3_0"
     assert items[319].id == "t3_319"
+
+    # Also verify custom batch_size
+    items_150 = classify(posts, source="followed", run_agy=recording_agy, batch_size=150)
+    assert len(items_150) == 320
+
+
+def test_parallel_execution_preserves_order():
+    posts = [_make_post(id=f"t3_{i}", title=f"Post {i}") for i in range(120)]
+
+    def mock_agy(brief_text: str, label: str):
+        time.sleep(0.01)
+        lines = [
+            f'{{"id": "t3_{i}", "section": "repo", "confidence": 0.9, "summary": "Post {i}"}}'
+            for i in range(120)
+        ]
+        return 0, "\n".join(lines)
+
+    items = classify(posts, source="followed", run_agy=mock_agy, batch_size=40, max_workers=3)
+    assert len(items) == 120
+    for i, item in enumerate(items):
+        assert item.id == f"t3_{i}"
 
 
 def test_brief_size():
