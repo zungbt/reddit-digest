@@ -9,7 +9,7 @@ FEEDS: list[tuple[str, list[str]]] = [
     ("LocalLLM", ["LocalLLM"]),
     ("ClaudeCode", ["ClaudeCode"]),
     ("ClaudeAI", ["ClaudeAI"]),
-    ("local-ai", ["DeepSeek", "Qwen_AI", "unsloth"]),
+    ("local-ai", ["DeepSeek", "Qwen_AI"]),
     (
         "ai-agents",
         [

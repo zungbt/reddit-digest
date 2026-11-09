@@ -527,6 +527,89 @@ def test_deduplication_seen_cross_feed_and_viewed(tmp_path: Path):
     assert "id:t3_view_unique" in viewed_part
 
 
+def test_crosspost_deduplication_by_link_and_title(tmp_path: Path):
+    work_dir = tmp_path / "work"
+    digests_dir = tmp_path / "digests"
+
+    # Feed 1 has:
+    # - t3_p1 with external link https://github.com/example/tool
+    # - t3_p2 with title "Exact Same Discussion Title Here"
+    # Feed 2 has:
+    # - t3_p3 with same link https://github.com/example/tool?ref=reddit
+    # - t3_p4 with same title "Exact Same Discussion Title Here"
+    feed1_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>t3_p1</id>
+    <category term="sub1"/>
+    <title>Tool Launch v1</title>
+    <link href="https://www.reddit.com/r/sub1/comments/p1/"/>
+    <published>2026-11-08T12:00:00+00:00</published>
+    <content type="html">&lt;a href="https://github.com/example/tool"&gt;[link]&lt;/a&gt;</content>
+  </entry>
+  <entry>
+    <id>t3_p2</id>
+    <category term="sub1"/>
+    <title>Exact Same Discussion Title Here</title>
+    <link href="https://www.reddit.com/r/sub1/comments/p2/"/>
+    <published>2026-11-08T12:00:00+00:00</published>
+    <content type="html">&lt;!-- SC_OFF --&gt;Text 1&lt;!-- SC_ON --&gt;</content>
+  </entry>
+</feed>"""
+
+    feed2_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>t3_p3</id>
+    <category term="sub2"/>
+    <title>Different Title But Same Tool Link</title>
+    <link href="https://www.reddit.com/r/sub2/comments/p3/"/>
+    <published>2026-11-08T12:00:00+00:00</published>
+    <content type="html">&lt;a href="https://github.com/example/tool?ref=reddit"&gt;[link]&lt;/a&gt;</content>
+  </entry>
+  <entry>
+    <id>t3_p4</id>
+    <category term="sub2"/>
+    <title>Exact Same Discussion Title Here</title>
+    <link href="https://www.reddit.com/r/sub2/comments/p4/"/>
+    <published>2026-11-08T12:00:00+00:00</published>
+    <content type="html">&lt;!-- SC_OFF --&gt;Text 2&lt;!-- SC_ON --&gt;</content>
+  </entry>
+</feed>"""
+
+    def fake_get(url: str) -> Response:
+        if "sub1" in url:
+            return Response(status=200, headers={}, body=feed1_xml)
+        return Response(status=200, headers={}, body=feed2_xml)
+
+    deps = Deps(
+        get=fake_get,
+        run_agy=lambda b, l: (0, ""),
+        viewed=lambda *args, **kwargs: ([], {}, 0),
+        feeds=[("f1", ["sub1"]), ("f2", ["sub2"])],
+        work_dir=work_dir,
+        digests_dir=digests_dir,
+    )
+
+    digest_path = run(today=date(2026, 11, 8), deps=deps)
+    content = digest_path.read_text(encoding="utf-8")
+
+    # t3_p1 and t3_p2 are kept
+    assert "id:t3_p1" in content
+    assert "id:t3_p2" in content
+
+    # t3_p3 is dropped (duplicate link) and t3_p4 is dropped (duplicate title)
+    assert "id:t3_p3" not in content
+    assert "id:t3_p4" not in content
+
+    # Check that dropped duplicate IDs are in state.seen
+    state = load(work_dir / "state.json")
+    assert "t3_p1" in state.seen
+    assert "t3_p2" in state.seen
+    assert "t3_p3" in state.seen
+    assert "t3_p4" in state.seen
+
+
 def test_same_day_rerun_overwrites_digest(tmp_path: Path):
     work_dir = tmp_path / "work"
     digests_dir = tmp_path / "digests"

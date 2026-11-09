@@ -78,7 +78,6 @@ def test_feed_config():
         # multi: local AI
         "DeepSeek",
         "Qwen_AI",
-        "unsloth",
         # multi: AI agents
         "GeminiAI",
         "google_antigravity",

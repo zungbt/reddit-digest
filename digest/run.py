@@ -8,6 +8,7 @@ import pathlib
 import re
 import time
 from typing import Any
+import urllib.parse
 
 from digest.atom import Post
 from digest.classify import Item, agy_run, classify
@@ -40,6 +41,24 @@ def _parse_iso(s: str) -> datetime | None:
         return dt
     except Exception:
         return None
+
+
+def _normalize_link(link: str | None) -> str:
+    if not link or not link.strip():
+        return ""
+    try:
+        p = urllib.parse.urlsplit(link)
+        host = (p.netloc or "").lower()
+        path = p.path.rstrip("/")
+        return f"{host}{path}"
+    except Exception:
+        return link.strip().lower()
+
+
+def _normalize_title(title: str | None) -> str:
+    if not title:
+        return ""
+    return re.sub(r"[\W_]+", "", title).lower()
 
 
 @dataclass
@@ -200,9 +219,11 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
     cutoff_dt = datetime.combine(today_date, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=deps.max_age_days or 30)
     cutoff_us = int(cutoff_dt.timestamp() * 1_000_000)
 
-    # 6. Drop ids in state.seen, then viewed ids already in followed
+    # 6. Drop ids in state.seen, duplicate crossposts, then viewed ids already in followed
     filtered_followed: list[Post] = []
     seen_this_run: set[str] = set()
+    seen_links: set[str] = set()
+    seen_titles: set[str] = set()
 
     for post in all_fetched_posts:
         if not post.id:
@@ -215,7 +236,22 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
             continue
         if post.id in seen_this_run:
             continue
+
+        norm_l = _normalize_link(post.link)
+        if norm_l and norm_l in seen_links:
+            seen_this_run.add(post.id)
+            continue
+
+        norm_t = _normalize_title(post.title)
+        if len(norm_t) >= 15 and norm_t in seen_titles:
+            seen_this_run.add(post.id)
+            continue
+
         seen_this_run.add(post.id)
+        if norm_l:
+            seen_links.add(norm_l)
+        if len(norm_t) >= 15:
+            seen_titles.add(norm_t)
         filtered_followed.append(post)
 
     filtered_viewed: list[Viewed] = []
@@ -228,7 +264,15 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
             continue
         if v.id in seen_this_run:
             continue
+
+        norm_t = _normalize_title(v.title)
+        if len(norm_t) >= 15 and norm_t in seen_titles:
+            seen_this_run.add(v.id)
+            continue
+
         seen_this_run.add(v.id)
+        if len(norm_t) >= 15:
+            seen_titles.add(norm_t)
         filtered_viewed.append(v)
 
     # 7. Classify
