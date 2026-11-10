@@ -60,3 +60,20 @@ def test_examples_save_counts_as_keep(tmp_path: Path):
     p = tmp_path / "feedback.jsonl"
     p.write_text(json.dumps({"id": "t3_s", "sub": "esp32", "title": "Saved one", "decision": "save"}) + "\n", encoding="utf-8")
     assert "KEEP | r/esp32 | Saved one" in feedback_examples(p)
+
+
+def test_examples_deduplicates_and_uses_latest_decision(tmp_path: Path):
+    p = tmp_path / "feedback.jsonl"
+    lines = [
+        json.dumps({"id": "t3_dup", "sub": "threejs", "title": "Ocean wave", "decision": "keep"}),
+        json.dumps({"id": "t3_other", "sub": "osdev", "title": "OS kernel", "decision": "keep"}),
+        # User changes mind from keep to reject:
+        json.dumps({"id": "t3_dup", "sub": "threejs", "title": "Ocean wave", "decision": "reject"}),
+    ]
+    p.write_text("\n".join(lines), encoding="utf-8")
+
+    out = feedback_examples(p)
+    assert "REJECT | r/threejs | Ocean wave" in out
+    assert "KEEP | r/threejs | Ocean wave" not in out
+    assert "KEEP | r/osdev | OS kernel" in out
+

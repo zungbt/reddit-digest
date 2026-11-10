@@ -19,8 +19,9 @@ def feedback_examples(path: pathlib.Path, n: int = FEWSHOT_N) -> str:
     if not content.strip():
         return ""
 
-    rejects: list[str] = []
-    keeps: list[str] = []
+    # Track latest decision per item to prevent duplicates or stale decisions
+    # Key by id (or title if id is missing)
+    latest_items: dict[str, tuple[str, str, str]] = {}
 
     for line in content.splitlines():
         line_str = line.strip()
@@ -37,14 +38,26 @@ def feedback_examples(path: pathlib.Path, n: int = FEWSHOT_N) -> str:
         if decision not in ("reject", "keep", "save"):
             continue
 
-        raw_sub = str(data.get("sub") or "").strip()
-        sub = raw_sub.lstrip("/").removeprefix("r/").strip()
+        item_id = str(data.get("id") or "").strip()
         raw_title = data.get("title")
         clean_title = " ".join(str(raw_title or "").split())[:140]
+        key = item_id if item_id else clean_title
+        if not key:
+            continue
 
+        raw_sub = str(data.get("sub") or "").strip()
+        sub = raw_sub.lstrip("/").removeprefix("r/").strip()
+        canonical_decision = "keep" if decision in ("keep", "save") else "reject"
+
+        latest_items[key] = (sub, clean_title, canonical_decision)
+
+    rejects: list[str] = []
+    keeps: list[str] = []
+
+    for sub, clean_title, decision in latest_items.values():
         if decision == "reject":
             rejects.append(f"REJECT | r/{sub} | {clean_title}")
-        elif decision in ("keep", "save"):
+        else:
             keeps.append(f"KEEP | r/{sub} | {clean_title}")
 
     selected = (rejects[-n:] if n > 0 else []) + (keeps[-n:] if n > 0 else [])
