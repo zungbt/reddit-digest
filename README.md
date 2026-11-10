@@ -4,7 +4,7 @@ A nightly personal digest tool that pulls new posts from followed subreddits (vi
 
 ## Features
 
-- **Followed Subreddits (RSS)**: Pulls newest posts across 12 feeds (3 solo, 9 multi-sub combinations) using Cloudflare DNS-over-HTTPS (DoH) via `curl.exe`.
+- **Followed Subreddits (RSS)**: Pulls newest posts across 17 feeds (3 solo, 14 multi-sub combinations) using Cloudflare DNS-over-HTTPS (DoH) via `curl.exe`.
 - **Waterfox History Integration**: Safely reads `/r/*/comments/*` visits from a copied temporary SQLite database to include posts you actually visited.
 - **AI Classification**: Leverages Gemini (`agy low`) to organize posts into ranked categories (`Repo / Tool`, `Project / Showcase`, `Useful knowledge`, `Money / content with AI`, `IT career / abroad`, `Game`, `Q&A about my tools`, `Other`), filtering noise and auto-dropping spam.
 - **Scoring & Two-Pass Triage**: Posts are scored 0–10 based on substance and relevance. A fast screening pass (`agy low` with truncated bodies) evaluates all followed posts, followed by a high pass (`agy high`) on up to `SCREEN_TOP_K` (300) top candidates. Posts below `MIN_SCORE` (7) are hidden into `work/dropped/` and each subreddit is capped at `MAX_PER_SUB` (15) posts. Standout posts (`score >= 9`) lead the digest under `## Top ideas`, and past keep/reject marks from `work/feedback.jsonl` are injected as few-shot examples into the prompt.

@@ -66,7 +66,7 @@ def test_body_has_no_table_text(parsed_posts: list[atom.Post]):
 
 
 def test_feed_config():
-    assert len(config.FEEDS) == 12
+    assert len(config.FEEDS) == 17
 
     expected_subs = {
         # solo
@@ -125,6 +125,32 @@ def test_feed_config():
         "compsci",
         "Learning",
         "learnpython",
+        # multi: systems & kernel
+        "osdev",
+        "kernel",
+        "embeddedlinux",
+        "riscv",
+        "Zephyr_RTOS",
+        "Compilers",
+        # multi: reversing & firmware
+        "ReverseEngineering",
+        "hardwarehacking",
+        "ExploitDev",
+        "netsec",
+        "redteamsec",
+        # multi: graphics & compute
+        "GraphicsProgramming",
+        "vulkan",
+        "webgpu",
+        "proceduralgeneration",
+        # multi: engine dev
+        "gameenginedevs",
+        "rust_gamedev",
+        "RoguelikeDev",
+        # multi: AI workflow
+        "mcp",
+        "LLMDevs",
+        "cline",
     }
 
     all_subs = []
@@ -154,6 +180,11 @@ def test_feed_config():
         "career",
         "security",
         "learning",
+        "systems-kernel",
+        "reversing-firmware",
+        "graphics-compute",
+        "engine-dev",
+        "ai-workflow",
     ]
     assert feed_names == expected_feed_names
 

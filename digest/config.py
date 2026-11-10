@@ -76,4 +76,50 @@ FEEDS: list[tuple[str, list[str]]] = [
     ),
     ("security", ["netsecstudents", "SecurityCareerAdvice", "AskNetsec"]),
     ("learning", ["compsci", "Learning", "learnpython"]),
+    (
+        "systems-kernel",
+        [
+            "osdev",
+            "kernel",
+            "embeddedlinux",
+            "riscv",
+            "Zephyr_RTOS",
+            "Compilers",
+        ],
+    ),
+    (
+        "reversing-firmware",
+        [
+            "ReverseEngineering",
+            "hardwarehacking",
+            "ExploitDev",
+            "netsec",
+            "redteamsec",
+        ],
+    ),
+    (
+        "graphics-compute",
+        [
+            "GraphicsProgramming",
+            "vulkan",
+            "webgpu",
+            "proceduralgeneration",
+        ],
+    ),
+    (
+        "engine-dev",
+        [
+            "gameenginedevs",
+            "rust_gamedev",
+            "RoguelikeDev",
+        ],
+    ),
+    (
+        "ai-workflow",
+        [
+            "mcp",
+            "LLMDevs",
+            "cline",
+        ],
+    ),
 ]
