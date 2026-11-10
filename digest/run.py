@@ -82,6 +82,58 @@ def _normalize_title(title: str | None) -> str:
     return re.sub(r"[\W_]+", "", title).lower()
 
 
+def _load_existing_posts(digest_path: pathlib.Path, dropped_path: pathlib.Path) -> list[Post]:
+    posts: list[Post] = []
+    seen_ids: set[str] = set()
+
+    pat = re.compile(
+        r"^- \[([^\]]*)\] \*\*(.*?)\*\* — (.*?) — \[post\]\((https?://[^\s\)]+)\)(?: · \[link\]\((https?://[^\s\)]+)\))? `r/([^`]+)` <!-- id:(\S+)"
+    )
+
+    if digest_path.exists():
+        for line in digest_path.read_text(encoding="utf-8").splitlines():
+            m = pat.match(line)
+            if m:
+                pid = m.group(7)
+                if pid not in seen_ids:
+                    seen_ids.add(pid)
+                    posts.append(
+                        Post(
+                            id=pid,
+                            sub=m.group(6),
+                            title=m.group(2),
+                            url=m.group(4),
+                            link=m.group(5),
+                            body=m.group(3),
+                            published="",
+                        )
+                    )
+
+    if dropped_path.exists():
+        for line in dropped_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    d = json.loads(line)
+                    pid = d.get("id")
+                    if pid and pid not in seen_ids:
+                        seen_ids.add(pid)
+                        posts.append(
+                            Post(
+                                id=pid,
+                                sub=d.get("sub", ""),
+                                title=d.get("title", ""),
+                                url=d.get("url", ""),
+                                link=d.get("link"),
+                                body=d.get("summary", ""),
+                                published="",
+                            )
+                        )
+                except Exception:
+                    pass
+
+    return posts
+
+
 @dataclass
 class Deps:
     get: Callable[[str], Response] = curl_get
@@ -102,6 +154,7 @@ class Deps:
     tmp_dir: pathlib.Path | None = None
     deadline_seconds: float = 45 * 60.0
     max_age_days: int | None = 30
+    reclassify: bool = False
 
     def __post_init__(self) -> None:
         self.work_dir = pathlib.Path(self.work_dir)
@@ -155,10 +208,10 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
     # 2. Load state
     state = load(deps.state_path)
 
-    # 3. If state.last_digest not in state.applied:
+    # 3. If state.last_digest not in state.applied (or if reclassify, to process latest marks):
     #    apply its marks (+ work/dropped/<its date>.jsonl), add to applied
-    if state.last_digest and state.last_digest not in state.applied:
-        last_path = pathlib.Path(state.last_digest)
+    if (state.last_digest and state.last_digest not in state.applied) or deps.reclassify:
+        last_path = (deps.digests_dir / f"{date_str}.md") if deps.reclassify else pathlib.Path(state.last_digest or "")
         if not last_path.is_absolute() and not last_path.exists():
             if (deps.digests_dir / last_path.name).exists():
                 last_path = deps.digests_dir / last_path.name
@@ -190,54 +243,64 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
             log=deps.feedback_path,
             dropped=dropped_items,
         )
-        state.applied.append(state.last_digest)
+        if state.last_digest and state.last_digest not in state.applied:
+            state.applied.append(state.last_digest)
 
     # 4. Fetch all feeds with state.last_ids[name] (log requests/posts per feed to work/log.txt)
     warnings: list[str] = []
     feed_results: list[FeedResult] = []
     all_fetched_posts: list[Post] = []
 
-    for name, subs in deps.feeds:
-        last_id = state.last_ids.get(name)
-        res = fetch_feed(
-            name=name,
-            subs=subs,
-            last_id=last_id,
-            deadline=deadline,
-            get=deps.get,
-            sleep=deps.sleep,
-            clock=deps.clock,
-            seen=state.seen,
+    if deps.reclassify:
+        all_fetched_posts = _load_existing_posts(
+            deps.digests_dir / f"{date_str}.md",
+            deps.dropped_dir / f"{date_str}.jsonl",
         )
-        feed_results.append(res)
-        all_fetched_posts.extend(res.posts)
+    else:
+        for name, subs in deps.feeds:
+            last_id = state.last_ids.get(name)
+            res = fetch_feed(
+                name=name,
+                subs=subs,
+                last_id=last_id,
+                deadline=deadline,
+                get=deps.get,
+                sleep=deps.sleep,
+                clock=deps.clock,
+                seen=state.seen,
+            )
+            feed_results.append(res)
+            all_fetched_posts.extend(res.posts)
 
-        log_msg = f"{date_str} feed={name} requests={res.requests} posts={len(res.posts)}"
-        if res.error:
-            log_msg += f" error={res.error}"
-            warnings.append(f"Feed '{name}': {res.error}")
-        _log(deps.log_path, log_msg)
+            log_msg = f"{date_str} feed={name} requests={res.requests} posts={len(res.posts)}"
+            if res.error:
+                log_msg += f" error={res.error}"
+                warnings.append(f"Feed '{name}': {res.error}")
+            _log(deps.log_path, log_msg)
 
     # 5. Viewed posts since state.history_since
-    try:
-        try:
-            viewed_posts, sub_counts, max_us = deps.viewed(
-                state.history_since,
-                profile=deps.waterfox_profile,
-                tmp=deps.tmp_dir,
-                max_age_days=deps.max_age_days,
-            )
-        except TypeError:
-            viewed_posts, sub_counts, max_us = deps.viewed(
-                state.history_since,
-                profile=deps.waterfox_profile,
-                tmp=deps.tmp_dir,
-            )
-    except Exception as e:
+    if deps.reclassify:
         viewed_posts, sub_counts, max_us = [], {}, state.history_since
-        warn_msg = f"Waterfox history unavailable: {e}"
-        warnings.append(warn_msg)
-        _log(deps.log_path, f"{date_str} {warn_msg}")
+    else:
+        try:
+            try:
+                viewed_posts, sub_counts, max_us = deps.viewed(
+                    state.history_since,
+                    profile=deps.waterfox_profile,
+                    tmp=deps.tmp_dir,
+                    max_age_days=deps.max_age_days,
+                )
+            except TypeError:
+                viewed_posts, sub_counts, max_us = deps.viewed(
+                    state.history_since,
+                    profile=deps.waterfox_profile,
+                    tmp=deps.tmp_dir,
+                )
+        except Exception as e:
+            viewed_posts, sub_counts, max_us = [], {}, state.history_since
+            warn_msg = f"Waterfox history unavailable: {e}"
+            warnings.append(warn_msg)
+            _log(deps.log_path, f"{date_str} {warn_msg}")
 
     cutoff_dt = datetime.combine(today_date, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=deps.max_age_days or 30)
     cutoff_us = int(cutoff_dt.timestamp() * 1_000_000)
@@ -257,7 +320,7 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
                 continue
         if not language_ok(post.title):
             continue
-        if post.id in state.seen:
+        if not deps.reclassify and post.id in state.seen:
             continue
         if post.id in seen_this_run:
             continue
@@ -421,20 +484,21 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
             f.write(json.dumps(dataclasses.asdict(it), ensure_ascii=False) + "\n")
 
     # 12. Update seen, last_ids (from FeedResult.newest_id), history_since (max visit), last_digest; prune; save state last
-    for p in all_fetched_posts:
-        if p.id and p.id not in state.seen:
-            state.seen[p.id] = date_str
+    if not deps.reclassify:
+        for p in all_fetched_posts:
+            if p.id and p.id not in state.seen:
+                state.seen[p.id] = date_str
 
-    for v in viewed_posts:
-        if v.id and v.id not in state.seen:
-            state.seen[v.id] = date_str
+        for v in viewed_posts:
+            if v.id and v.id not in state.seen:
+                state.seen[v.id] = date_str
 
-    for res in feed_results:
-        if res.newest_id:
-            state.last_ids[res.name] = res.newest_id
+        for res in feed_results:
+            if res.newest_id:
+                state.last_ids[res.name] = res.newest_id
 
-    if max_us > state.history_since:
-        state.history_since = max_us
+        if max_us > state.history_since:
+            state.history_since = max_us
 
     state.last_digest = str(digest_path)
 

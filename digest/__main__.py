@@ -21,6 +21,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Date for digest in YYYY-MM-DD format (default: today)",
     )
+    parser_run.add_argument(
+        "--reclassify",
+        action="store_true",
+        help="Reclassify existing digest posts without fetching feeds",
+    )
 
     parser_review = subparsers.add_parser("review", help="Review reject/keep feedback")
 
@@ -29,9 +34,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         d = args.date or date.today()
         try:
-            deps = Deps(run_agy_screen=functools.partial(agy_run, level="low"))
+            deps = Deps(
+                run_agy_screen=functools.partial(agy_run, level="low"),
+                reclassify=args.reclassify,
+            )
         except TypeError:
-            deps = Deps()
+            try:
+                deps = Deps(reclassify=args.reclassify)
+            except TypeError:
+                deps = Deps()
+                if hasattr(deps, "reclassify"):
+                    deps.reclassify = args.reclassify
         digest_path = run(today=d, deps=deps)
         print(f"Digest generated: {digest_path}")
         return 0

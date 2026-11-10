@@ -990,4 +990,53 @@ def test_run_high_pass_zero_or_neg_top_k(tmp_path: Path, monkeypatch):
     assert high_received == []
 
 
+def test_run_reclassify(tmp_path: Path):
+    digests_dir = tmp_path / "digests"
+    work_dir = tmp_path / "work"
+    dropped_dir = work_dir / "dropped"
+    digests_dir.mkdir(parents=True)
+    dropped_dir.mkdir(parents=True)
+
+    today = date(2026, 11, 9)
+    # Seed an existing digest
+    digest_file = digests_dir / "2026-11-09.md"
+    digest_file.write_text(
+        "## Top ideas\n"
+        "- [ ] **Post One** — Summary 1 — [post](https://reddit.com/r/sub1/comments/p1) `r/sub1` <!-- id:t3_p1 section:repo score:10 -->\n",
+        encoding="utf-8",
+    )
+    # Seed a dropped post
+    dropped_file = dropped_dir / "2026-11-09.jsonl"
+    dropped_file.write_text(
+        json.dumps({"id": "t3_p2", "sub": "sub2", "title": "Post Two", "url": "https://reddit.com/r/sub2/comments/p2", "summary": "Summary 2"}) + "\n",
+        encoding="utf-8",
+    )
+
+    classified_ids: list[str] = []
+
+    def fake_screen(brief: str, label: str):
+        classified_ids.extend(_extract_ids_from_agy_brief(brief))
+        return 0, '{"id": "t3_p1", "section": "repo", "confidence": 0.9, "score": 9, "summary": "S1"}\n{"id": "t3_p2", "section": "repo", "confidence": 0.9, "score": 8, "summary": "S2"}'
+
+    def fail_get(url: str):
+        raise AssertionError("get should not be called during reclassify")
+
+    deps = Deps(
+        get=fail_get,
+        run_agy_screen=fake_screen,
+        run_agy=lambda brief, label: (0, ""),
+        work_dir=work_dir,
+        digests_dir=digests_dir,
+        reclassify=True,
+    )
+
+    out = run(today=today, deps=deps)
+    assert out == digest_file
+    assert set(classified_ids) == {"t3_p1", "t3_p2"}
+    content = digest_file.read_text(encoding="utf-8")
+    assert "t3_p1" in content
+    assert "t3_p2" in content
+
+
+
 
