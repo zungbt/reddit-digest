@@ -27,7 +27,6 @@ def test_first_post_fields(parsed_posts: list[atom.Post]):
     assert first.title.startswith("IMC Hardware Engineering role")
     assert first.body.startswith("Hello ! I am in the process")
     assert "<" not in first.body and ">" not in first.body
-    assert len(first.body) <= 600
     assert first.url == "https://www.reddit.com/r/FPGA/comments/1xqxv0m/imc_hardware_engineering_role_interview/"
     assert first.published == "2026-11-08T12:59:14+00:00"
 

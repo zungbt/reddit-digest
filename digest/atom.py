@@ -152,7 +152,7 @@ def _parse_entry(entry: ET.Element) -> Post:
     if md_html:
         md_parser.feed(md_html)
         raw_body_text = " ".join("".join(md_parser.text_parts).split())
-        body = raw_body_text[:600]
+        body = raw_body_text
     else:
         body = ""
 

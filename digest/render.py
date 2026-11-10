@@ -3,6 +3,7 @@ import datetime
 from typing import Any
 
 from digest.classify import Item, SECTIONS, SECTION_ALIASES
+from digest import config
 from digest.feedback import Mark, read_marks
 
 __all__ = ["render", "Mark", "read_marks", "SECTION_ORDER"]
@@ -44,8 +45,9 @@ def _format_item_line(item: Item) -> str:
 
     summary_part = f" — {summary}" if summary else ""
 
+    tag_score = f" score:{item.score}" if item.score is not None else ""
     return (
-        f"- [ ] **{title}**{summary_part} — [post]({url}){link_part} `r/{sub}` <!-- id:{post_id} section:{sec} -->"
+        f"- [ ] **{title}**{summary_part} — [post]({url}){link_part} `r/{sub}` <!-- id:{post_id} section:{sec}{tag_score} -->"
     )
 
 
@@ -56,6 +58,8 @@ def _render_group(group_heading: str, group_items: Sequence[Item]) -> str:
         sec_items = [it for it in group_items if _canonical_section(it.section) == sec]
         if not sec_items:
             continue
+
+        sec_items.sort(key=lambda it: (it.score is None, -(it.score if it.score is not None else 0)))
 
         heading_title = SECTIONS.get(sec, sec)
         section_lines = [f"### {heading_title}"]
@@ -99,12 +103,30 @@ def render(
         if warn_lines:
             blocks.append("\n".join(warn_lines))
 
-    # 2. Partition items by source (skipping drop items)
+    # 2. Top ideas block (skipping drop items)
+    non_drop_items = [it for it in items if _canonical_section(it.section) != "drop"]
+    top_candidates = [
+        it for it in non_drop_items
+        if it.score is not None and it.score >= config.TOP_MIN_SCORE
+    ]
+    top_ids: set[str] = set()
+    top_n = max(0, config.TOP_N)
+    if top_candidates and top_n > 0:
+        sorted_top = sorted(top_candidates, key=lambda it: -it.score)
+        top_items = sorted_top[:top_n]
+        if top_items:
+            top_ids = {it.id for it in top_items}
+            top_lines = ["## Top ideas"]
+            for it in top_items:
+                top_lines.append(_format_item_line(it))
+            blocks.append("\n".join(top_lines))
+
+    # 3. Partition remaining items by source
     followed_items: list[Item] = []
     viewed_items: list[Item] = []
 
-    for it in items:
-        if _canonical_section(it.section) == "drop":
+    for it in non_drop_items:
+        if it.id in top_ids:
             continue
         if getattr(it, "source", "") == "viewed":
             viewed_items.append(it)

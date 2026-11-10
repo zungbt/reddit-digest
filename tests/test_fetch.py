@@ -664,3 +664,53 @@ def test_deadline_at_start_no_requests():
     assert result.newest_id == "t3_target"
 
 
+
+
+def test_stops_at_seen_post_when_last_id_missing():
+    # last_id was deleted from the feed; the first already-seen post must still end paging
+    pages = {
+        1: [f"t3_p1_{j}" for j in range(100)],
+        2: [f"t3_p2_{j}" for j in range(30)] + ["t3_seen_a", "t3_seen_b"] + [f"t3_p2_{j}" for j in range(30, 68)],
+        3: [f"t3_p3_{j}" for j in range(100)],
+    }
+    requested_urls: list[str] = []
+
+    def fake_get(url: str) -> Response:
+        requested_urls.append(url)
+        return Response(status=200, headers={}, body=make_feed_xml(pages[len(requested_urls)]))
+
+    clock = FakeClock(0.0)
+    result = fetch_feed(
+        name="test",
+        subs=["embedded"],
+        last_id="t3_deleted",
+        deadline=1000.0,
+        get=fake_get,
+        sleep=RecordingSleep(clock),
+        clock=clock,
+        seen={"t3_seen_a": "2026-11-09", "t3_seen_b": "2026-11-09"},
+    )
+
+    assert result.requests == 2
+    assert len(result.posts) == 130
+    assert "t3_seen_a" not in {p.id for p in result.posts}
+    assert result.newest_id == "t3_p1_0"
+    assert result.error is None
+
+
+def test_seen_ignored_on_first_run_single_page():
+    def fake_get(url: str) -> Response:
+        return Response(status=200, headers={}, body=make_feed_xml(["t3_a", "t3_seen", "t3_b"]))
+
+    result = fetch_feed(
+        name="test",
+        subs=["embedded"],
+        last_id=None,
+        deadline=1000.0,
+        get=fake_get,
+        clock=FakeClock(0.0),
+        seen={"t3_seen": "2026-11-09"},
+    )
+
+    assert result.requests == 1
+    assert [p.id for p in result.posts] == ["t3_a", "t3_seen", "t3_b"]

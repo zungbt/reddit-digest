@@ -13,6 +13,7 @@ from typing import Any
 import uuid
 
 from digest.config import ROOT, WORK
+from digest.examples import feedback_examples
 
 SECTIONS: dict[str, str] = {
     "repo": "Repo / Tool",
@@ -77,20 +78,25 @@ Task: classify Reddit posts for a personal "idea digest" of a Vietnamese develop
 Input: work/calib/batchN.jsonl — one JSON per line: id, sub, title, body (body may be empty; then judge from title + sub).
 
 Sections (pick exactly one per post):
-- repo: a repo, tool, library, model or app release
+- repo: a repo, tool, library or app release (NOT a bare model/checkpoint release)
 - game: a game or game-dev showcase
 - showcase: "I built X" / project the author made (non-game)
 - knowledge: benchmark, comparison, workflow experiment, technique, explanation
-- qa_tools: question/answer about tools the user uses (quantization, local models, coding agents, hardware setup) — KEEP these
+- qa_tools: question/answer about coding agents, dev tools or workflows the user uses. Questions about LLM hardware/quantization/"can my GPU run model X" go to drop (see below)
 - career: IT career, job market, working/living abroad
 - money: making money or content with AI (UGC ads, faceless YouTube, digital products)
 - other: does not fit above but is not noise
-- drop: ONLY memes, jokes, info-less rants, hiring/self-promo spam, unrelated entertainment
+- drop: memes, jokes, info-less rants, hiring/self-promo spam, unrelated entertainment, AND low-value LLM posts (below)
+LLM posts (about LLMs/models themselves, any sub) are kept ONLY if they are an end-user tool/library/app or a practical guide/how-to the reader can apply (coding agents, skills, workflows, apps built on LLMs). Always drop: bare model releases (weights, checkpoints, GGUF/quants, finetunes, Hugging Face model pages, speech/vision/other model announcements) and inference/runtime infrastructure (inference engines, llama.cpp/vLLM/SGLang and engine comparisons, running model X on GPU Y, quantization), even when the post links a repo. Drop LLM posts that are only: benchmarks or speed numbers (tok/s), hardware/GPU comparisons or setup questions, quantization/KV-cache measurements without a usable technique, model news/rumors/drama, or chatter about model behavior. Read title+body and understand the context before dropping; never drop on keywords alone.
+Effort filter (all subs): keep only high-effort posts the reader can learn from or reuse: detailed write-ups, repos/tools with docs, reusable workflows, measurements with the method shown. Drop low-effort posts: "made this for fun" demos/games/clips that only show off a model, screenshots or clips with no repo or method, one-line questions, venting, chatter. Exception: if the post links a repo or explains a reusable workflow, keep it even when it is a showcase.
 When unsure between drop and anything else, do NOT drop — use other.
 
+Score rubric: score 9–10 = usable today with real substance (repo/tool with docs, reusable workflow, measured results with method); 7–8 = solid and relevant; 4–6 = relevant but thin; 0–3 = low value for this reader; relevance means coding agents, embedded/FPGA/PCB, game dev/3D, security, IT career.
+
 Output: ONLY JSON lines, one per input id, nothing else:
-{"id":"t3_...","section":"...","confidence":0.0-1.0,"summary":"1 sentence, same language as the title"}
-Every input id must appear exactly once."""
+{"id":"t3_...","section":"...","confidence":0.0-1.0,"score":0-10,"summary":"..."}
+Every input id must appear exactly once.
+"""
 
 
 @dataclass
@@ -103,6 +109,7 @@ class Item:
     section: str
     summary: str
     source: str
+    score: int | None = None
 
 
 def _clean_str(val: Any) -> str:
@@ -115,7 +122,7 @@ def _collapse_spaces(text: str) -> str:
     return " ".join(text.split())
 
 
-def write_input(posts: Sequence[Any], path: pathlib.Path | str) -> None:
+def write_input(posts: Sequence[Any], path: pathlib.Path | str, body_limit: int | None = None) -> None:
     p = pathlib.Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
@@ -131,11 +138,15 @@ def write_input(posts: Sequence[Any], path: pathlib.Path | str) -> None:
                 title = _clean_str(getattr(post, "title", None))
                 body = _clean_str(getattr(post, "body", None))
 
+            if body_limit is not None and body:
+                limit = max(0, body_limit)
+                body = body[:limit]
+
             entry = {
                 "id": post_id,
                 "sub": sub,
                 "title": title,
-                "body": body[:600],
+                "body": body,
             }
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -154,12 +165,37 @@ def brief(input_rel: str) -> str:
     else:
         res = re.sub(r"(Input:\s*)\S+", rf"\g<1>{normalized_input}", template)
 
+    examples = feedback_examples(WORK / "feedback.jsonl")
+    if examples:
+        res = res.rstrip("\n") + "\n\n" + examples
+
     if len(res.encode("utf-8")) > 30000:
         raise ValueError(f"Brief size exceeds 30000 bytes: {len(res.encode('utf-8'))}")
     return res
 
 
-def _parse_entry_dict(data: Any) -> tuple[str, tuple[str, float, str]] | None:
+def _parse_score(raw: object) -> int | None:
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        try:
+            val = round(float(raw))
+            return max(0, min(10, val))
+        except (ValueError, OverflowError):
+            return None
+    if isinstance(raw, str):
+        s = raw.strip()
+        m = re.match(r"^([+-]?\d+(?:\.\d+)?)(?:\s*/\s*10)?$", s)
+        if m:
+            try:
+                val = round(float(m.group(1)))
+                return max(0, min(10, val))
+            except (ValueError, OverflowError):
+                return None
+    return None
+
+
+def _parse_entry_dict(data: Any) -> tuple[str, tuple[str, float, str, int | None]] | None:
     if not isinstance(data, dict):
         return None
     raw_id = data.get("id")
@@ -192,14 +228,16 @@ def _parse_entry_dict(data: Any) -> tuple[str, tuple[str, float, str]] | None:
     if summary in ("None", "null"):
         summary = ""
 
-    return post_id, (sec, conf, summary)
+    score = _parse_score(data.get("score"))
+
+    return post_id, (sec, conf, summary, score)
 
 
-def parse_reply(text: str) -> dict[str, tuple[str, float, str]]:
+def parse_reply(text: str) -> dict[str, tuple[str, float, str, int | None]]:
     if not text or not text.strip():
         return {}
 
-    results: dict[str, tuple[str, float, str]] = {}
+    results: dict[str, tuple[str, float, str, int | None]] = {}
     cleaned = text.strip()
 
     # 1. First attempt: Use JSONDecoder to scan for all JSON objects / arrays across the entire text
@@ -347,6 +385,7 @@ def classify(
     run_agy: Callable[[str, str], tuple[int, str]] = agy_run,
     batch_size: int = BATCH_SIZE,
     max_workers: int = MAX_WORKERS,
+    body_limit: int | None = None,
 ) -> list[Item]:
     if not posts:
         return []
@@ -365,7 +404,7 @@ def classify(
         label = f"classify-{norm_source}-{batch_idx}-{uuid.uuid4().hex[:8]}"
         batch_file = tmp_dir / f"{label}.jsonl"
         try:
-            write_input(batch, batch_file)
+            write_input(batch, batch_file, body_limit=body_limit)
             try:
                 rel_path = batch_file.relative_to(ROOT).as_posix()
             except ValueError:
@@ -386,7 +425,7 @@ def classify(
                 pass
 
         if rc != 0:
-            parsed: dict[str, tuple[str, float, str]] = {}
+            parsed: dict[str, tuple[str, float, str, int | None]] = {}
         else:
             parsed = parse_reply(reply)
 
@@ -416,15 +455,17 @@ def classify(
                 p_link = p_link_str if p_link_str else None
 
             if p_id in parsed:
-                sec, conf, summ = parsed[p_id]
+                sec, conf, summ, sc = parsed[p_id]
                 if norm_source == "followed" and sec == "drop" and conf < 0.9:
                     sec = "other"
+                    sc = None
                 if not summ or not summ.strip():
                     summ = fallback_summary
                 else:
                     summ = _collapse_spaces(summ)
             else:
                 sec = "other"
+                sc = None
                 summ = fallback_summary
 
             batch_items.append(
@@ -437,6 +478,7 @@ def classify(
                     section=sec,
                     summary=summ,
                     source=norm_source,
+                    score=sc,
                 )
             )
         return batch_items

@@ -12,11 +12,14 @@ import urllib.parse
 
 from digest.atom import Post
 from digest.classify import Item, agy_run, classify
+from digest import config
 from digest.config import DIGESTS, FEEDS, ROOT, WORK
 from digest.feedback import apply, read_marks
 from digest.fetch import FeedResult, Response, curl_get, fetch_feed
 from digest.history import PROFILE, Viewed, viewed_since
+from digest.prefilter import language_ok
 from digest.render import render
+from digest.select import select
 from digest.state import State, load, prune, save
 
 
@@ -29,6 +32,24 @@ def _log(path: pathlib.Path | None, message: str) -> None:
             f.write(message.rstrip("\n") + "\n")
     except OSError:
         pass
+
+
+# Reddit post ids are sequential base36, so two (id, date) anchors give an approximate
+# ids/day rate. Accurate to a few days near the anchors; re-anchor if it drifts.
+_ID_ANCHORS = (("1rtak9o", date(2026, 3, 14)), ("1xrrvhr", date(2026, 11, 9)))
+_ID_AGE_MARGIN_DAYS = 7
+
+
+def _estimate_post_dt(post_id: str | None) -> datetime | None:
+    """Rough creation time of a post from its base36 id; None if the id isn't a real Reddit id."""
+    m = re.fullmatch(r"(?:t3_)?([0-9a-z]{6,8})", (post_id or "").lower())
+    if not m:
+        return None
+    (id1, d1), (id2, d2) = _ID_ANCHORS
+    n1, n2 = int(id1, 36), int(id2, 36)
+    ids_per_day = (n2 - n1) / (d2 - d1).days
+    anchor = datetime.combine(d2, datetime.min.time(), tzinfo=timezone.utc)
+    return anchor + timedelta(days=(int(m[1], 36) - n2) / ids_per_day)
 
 
 def _parse_iso(s: str) -> datetime | None:
@@ -67,6 +88,7 @@ class Deps:
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
     run_agy: Callable[[str, str], tuple[int, str]] = agy_run
+    run_agy_screen: Callable[[str, str], tuple[int, str]] | None = None
     viewed: Callable[..., tuple[list[Viewed], dict[str, int], int]] = viewed_since
     feeds: list[tuple[str, list[str]]] = field(default_factory=lambda: list(FEEDS))
     work_dir: pathlib.Path = WORK
@@ -185,6 +207,7 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
             get=deps.get,
             sleep=deps.sleep,
             clock=deps.clock,
+            seen=state.seen,
         )
         feed_results.append(res)
         all_fetched_posts.extend(res.posts)
@@ -232,6 +255,8 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
             p_dt = _parse_iso(post.published)
             if p_dt is not None and p_dt < cutoff_dt:
                 continue
+        if not language_ok(post.title):
+            continue
         if post.id in state.seen:
             continue
         if post.id in seen_this_run:
@@ -259,6 +284,12 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
         if not v.id:
             continue
         if deps.max_age_days and v.visited > 100_000_000_000 and v.visited < cutoff_us:
+            continue
+        if deps.max_age_days:
+            est_dt = _estimate_post_dt(v.id)
+            if est_dt is not None and est_dt < cutoff_dt - timedelta(days=_ID_AGE_MARGIN_DAYS):
+                continue
+        if not language_ok(v.title):
             continue
         if v.id in state.seen:
             continue
@@ -290,7 +321,40 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
             _log(deps.log_path, f"{date_str} agy exception label={label}: {ex}")
             return 1, ""
 
-    followed_items = classify(filtered_followed, source="followed", run_agy=tracking_run_agy)
+    followed_items: list[Item]
+    if deps.run_agy_screen is not None:
+        def tracking_screen_agy(brief_text: str, label: str) -> tuple[int, str]:
+            try:
+                rc, reply = deps.run_agy_screen(brief_text, label)
+                if rc != 0:
+                    agy_errors.append(rc)
+                    _log(deps.log_path, f"{date_str} agy error label={label} rc={rc}")
+                return rc, reply
+            except Exception as ex:
+                agy_errors.append(1)
+                _log(deps.log_path, f"{date_str} agy exception label={label}: {ex}")
+                return 1, ""
+
+        pass1_items = classify(filtered_followed, source="followed", run_agy=tracking_screen_agy, body_limit=600)
+        candidates = [it for it in pass1_items if str(it.section or "").strip().lower() != "drop"]
+        candidates.sort(key=lambda it: (it.score is not None, -(it.score if it.score is not None else 0)))
+        top_k = max(0, config.SCREEN_TOP_K)
+        top_candidates = candidates[:top_k]
+        top_candidate_ids = {it.id for it in top_candidates}
+
+        pass2_posts = [p for p in filtered_followed if p.id in top_candidate_ids]
+        pass2_items = classify(pass2_posts, source="followed", run_agy=tracking_run_agy)
+
+        pass2_by_id = {it.id: it for it in pass2_items}
+        followed_items = []
+        for it in pass1_items:
+            if it.id in pass2_by_id and pass2_by_id[it.id].score is not None:
+                followed_items.append(pass2_by_id[it.id])
+            else:
+                followed_items.append(it)
+    else:
+        followed_items = classify(filtered_followed, source="followed", run_agy=tracking_run_agy)
+
     viewed_items = classify(filtered_viewed, source="viewed", run_agy=tracking_run_agy)
 
     all_items = followed_items + viewed_items
@@ -334,9 +398,11 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
     suggestions.sort(key=lambda x: (-x[1], x[0].lower()))
     suggestions = suggestions[:10]
 
-    # 10. Render
+    # 10. Select & Render
+    shown, hidden = select(all_items)
+
     rendered_md = render(
-        items=all_items,
+        items=shown,
         warnings=warnings,
         suggestions=suggestions,
         day=today_date,
@@ -347,7 +413,7 @@ def run(today: date | datetime | str | None = None, deps: Deps | None = None) ->
     deps.digests_dir.mkdir(parents=True, exist_ok=True)
     digest_path.write_text(rendered_md, encoding="utf-8")
 
-    dropped_items = [it for it in all_items if it.section == "drop"]
+    dropped_items = [it for it in all_items if str(it.section or "").strip().lower() == "drop"] + hidden
     dropped_path = deps.dropped_dir / f"{date_str}.jsonl"
     deps.dropped_dir.mkdir(parents=True, exist_ok=True)
     with open(dropped_path, "w", encoding="utf-8") as f:

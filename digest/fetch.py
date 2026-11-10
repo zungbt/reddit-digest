@@ -1,3 +1,4 @@
+from collections.abc import Container
 import pathlib
 import re
 import subprocess
@@ -93,6 +94,7 @@ def fetch_feed(
     get=curl_get,
     sleep=time.sleep,
     clock=time.monotonic,
+    seen: Container[str] | None = None,
 ) -> FeedResult:
     if last_id and last_id.strip():
         last_id = last_id.strip()
@@ -183,7 +185,9 @@ def fetch_feed(
 
         reached_last_id = False
         for post in page_posts:
-            if last_id is not None and post.id == last_id:
+            if (last_id is not None and post.id == last_id) or (
+                last_id is not None and seen is not None and post.id in seen
+            ):
                 reached_last_id = True
                 break
             if post.id not in seen_ids:

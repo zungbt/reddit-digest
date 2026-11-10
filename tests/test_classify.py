@@ -8,6 +8,7 @@ from digest.history import Viewed
 from digest.classify import (
     SECTIONS,
     Item,
+    _parse_score,
     brief,
     classify,
     parse_reply,
@@ -91,9 +92,9 @@ Hope this helps!
 """
     parsed = parse_reply(raw_text)
     assert len(parsed) == 3
-    assert parsed["t3_abc1"] == ("repo", 0.95, "A fast markdown parser for Python")
-    assert parsed["t3_abc2"] == ("game", 0.88, "Indie developer shows demo of 3D platformer")
-    assert parsed["t3_abc3"] == ("knowledge", 0.9, "Guide on quantizing LLMs on consumer hardware")
+    assert parsed["t3_abc1"] == ("repo", 0.95, "A fast markdown parser for Python", None)
+    assert parsed["t3_abc2"] == ("game", 0.88, "Indie developer shows demo of 3D platformer", None)
+    assert parsed["t3_abc3"] == ("knowledge", 0.9, "Guide on quantizing LLMs on consumer hardware", None)
 
 
 def test_unknown_section_becomes_other():
@@ -103,9 +104,9 @@ def test_unknown_section_becomes_other():
 {"id": "t3_3", "section": "repo", "confidence": 0.99, "summary": "Known section"}
 """
     parsed = parse_reply(raw_text)
-    assert parsed["t3_1"] == ("other", 0.85, "Something weird")
-    assert parsed["t3_2"] == ("other", 0.6, "Random item")
-    assert parsed["t3_3"] == ("repo", 0.99, "Known section")
+    assert parsed["t3_1"] == ("other", 0.85, "Something weird", None)
+    assert parsed["t3_2"] == ("other", 0.6, "Random item", None)
+    assert parsed["t3_3"] == ("repo", 0.99, "Known section", None)
 
 
 def test_missing_ids_become_other():
@@ -272,7 +273,7 @@ def test_write_input(tmp_path: Path):
     assert data1["id"] == "t3_abc"
     assert data1["sub"] == "LocalLLaMA"
     assert data1["title"] == "Post Title"
-    assert len(data1["body"]) == 600
+    assert len(data1["body"]) == 700
 
     data2 = json.loads(lines[1])
     assert data2["id"] == "t3_def"
@@ -316,8 +317,8 @@ def test_parse_reply_json_array():
     ])
     parsed = parse_reply(raw_array)
     assert len(parsed) == 2
-    assert parsed["t3_10"] == ("game", 0.8, "Game dev update")
-    assert parsed["t3_20"] == ("career", 0.75, "Career advice")
+    assert parsed["t3_10"] == ("game", 0.8, "Game dev update", None)
+    assert parsed["t3_20"] == ("career", 0.75, "Career advice", None)
 
 
 def test_parse_reply_empty_and_garbage():
@@ -358,8 +359,8 @@ Intermediate comment between items.
 """
     parsed = parse_reply(raw_text)
     assert len(parsed) == 2
-    assert parsed["t3_multi1"] == ("repo", 0.95, "Multi-line JSON object parser")
-    assert parsed["t3_multi2"] == ("game", 0.88, "Indie game release")
+    assert parsed["t3_multi1"] == ("repo", 0.95, "Multi-line JSON object parser", None)
+    assert parsed["t3_multi2"] == ("game", 0.88, "Indie game release", None)
 
 
 def test_parse_reply_multiline_json_array_in_code_fence():
@@ -381,8 +382,8 @@ def test_parse_reply_multiline_json_array_in_code_fence():
 ```"""
     parsed = parse_reply(raw_text)
     assert len(parsed) == 2
-    assert parsed["t3_arr1"] == ("knowledge", 0.9, "Deep dive into model quantization")
-    assert parsed["t3_arr2"] == ("money", 0.82, "Monetizing AI generated content")
+    assert parsed["t3_arr1"] == ("knowledge", 0.9, "Deep dive into model quantization", None)
+    assert parsed["t3_arr2"] == ("money", 0.82, "Monetizing AI generated content", None)
 
 
 def test_parse_reply_section_aliases_and_headings():
@@ -487,3 +488,130 @@ def test_classify_empty_string_link_normalized_to_none():
 
     items = classify([p], source="followed", run_agy=fake_agy)
     assert items[0].link is None
+
+
+def test_parse_score_variants():
+    assert _parse_score(8) == 8
+    assert _parse_score(7.5) == 8
+    assert _parse_score(11) == 10
+    assert _parse_score(-2) == 0
+    assert _parse_score("8/10") == 8
+    assert _parse_score("high") is None
+    assert _parse_score(None) is None
+    assert _parse_score(True) is None
+    assert _parse_score(False) is None
+    assert _parse_score(float("nan")) is None
+    assert _parse_score(float("inf")) is None
+    assert _parse_score("10/10") == 10
+    assert _parse_score("0/10") == 0
+
+
+def test_write_input_negative_body_limit(tmp_path: Path):
+    out_file = tmp_path / "neg_limit.jsonl"
+    p = _make_post(id="t3_p", body="Some long body text")
+    write_input([p], out_file, body_limit=-1)
+    data = json.loads(out_file.read_text(encoding="utf-8").strip())
+    assert data["body"] == ""
+
+
+def test_parse_reply_includes_score():
+    raw_text = """
+{"id": "t3_with_score", "section": "repo", "confidence": 0.9, "summary": "s", "score": 9}
+{"id": "t3_without_score", "section": "repo", "confidence": 0.9, "summary": "s"}
+"""
+    parsed = parse_reply(raw_text)
+    assert parsed["t3_with_score"] == ("repo", 0.9, "s", 9)
+    assert parsed["t3_without_score"] == ("repo", 0.9, "s", None)
+
+
+def test_item_loads_without_score():
+    old_fields = {
+        "id": "t3_old",
+        "sub": "LocalLLaMA",
+        "title": "Old item",
+        "url": "https://reddit.com/r/LocalLLaMA/comments/old",
+        "link": None,
+        "section": "repo",
+        "summary": "Old summary",
+        "source": "followed",
+    }
+    item = Item(**old_fields)
+    assert item.score is None
+
+
+def test_classify_sets_score():
+    p1 = _make_post(id="t3_scored", title="Scored Post")
+    p2 = _make_post(id="t3_missing", title="Missing Post")
+
+    def fake_agy(brief_text: str, label: str):
+        return 0, '{"id": "t3_scored", "section": "repo", "confidence": 0.9, "score": 6, "summary": "Scored"}'
+
+    items = classify([p1, p2], source="followed", run_agy=fake_agy)
+    assert len(items) == 2
+    assert items[0].id == "t3_scored"
+    assert items[0].score == 6
+    assert items[1].id == "t3_missing"
+    assert items[1].score is None
+
+
+def test_unsure_drop_becomes_other_unscored():
+    p1 = _make_post(id="t3_unsure", title="Unsure drop")
+    p2 = _make_post(id="t3_sure", title="Sure drop")
+
+    def fake_agy(brief_text: str, label: str):
+        return 0, "\n".join([
+            '{"id": "t3_unsure", "section": "drop", "confidence": 0.6, "score": 1, "summary": "Unsure"}',
+            '{"id": "t3_sure", "section": "drop", "confidence": 0.95, "score": 1, "summary": "Sure"}',
+        ])
+
+    items = classify([p1, p2], source="followed", run_agy=fake_agy)
+    assert items[0].section == "other"
+    assert items[0].score is None
+    assert items[1].section == "drop"
+    assert items[1].score == 1
+
+
+def test_briefs_in_sync():
+    from digest.classify import DEFAULT_BRIEF, CALIB_BRIEF_PATH
+    import re
+    calib_text = CALIB_BRIEF_PATH.read_text(encoding="utf-8")
+    norm_calib = re.sub(r"(Input:\s*)\S+", r"\g<1><INPUT>", calib_text)
+    norm_default = re.sub(r"(Input:\s*)\S+", r"\g<1><INPUT>", DEFAULT_BRIEF)
+    assert norm_calib == norm_default
+    assert "score" in norm_calib
+    assert "score" in norm_default
+
+
+def test_brief_appends_examples(tmp_path: Path, monkeypatch):
+    import digest.classify
+    monkeypatch.setattr(digest.classify, "WORK", tmp_path)
+
+    # With no file, brief("x") equals the template alone
+    b_alone = brief("work/calib/batch1.jsonl")
+    assert "Examples of this reader's taste" not in b_alone
+
+    # With feedback file
+    fb = tmp_path / "feedback.jsonl"
+    fb.write_text(
+        json.dumps({"id": "t3_1", "sub": "LocalLLaMA", "title": "Example Post", "decision": "reject"}) + "\n",
+        encoding="utf-8",
+    )
+    b_with = brief("work/calib/batch1.jsonl")
+    assert "Examples of this reader's taste (from past marks):" in b_with
+    assert b_with.endswith("REJECT | r/LocalLLaMA | Example Post")
+
+
+def test_write_input_body_limit(tmp_path: Path):
+    p = _make_post(id="t3_long", body="x" * 700)
+    out1 = tmp_path / "limit100.jsonl"
+    write_input([p], out1, body_limit=100)
+    data1 = json.loads(out1.read_text(encoding="utf-8").strip())
+    assert len(data1["body"]) == 100
+
+    out2 = tmp_path / "limit_none.jsonl"
+    write_input([p], out2, body_limit=None)
+    data2 = json.loads(out2.read_text(encoding="utf-8").strip())
+    assert len(data2["body"]) == 700
+
+
+

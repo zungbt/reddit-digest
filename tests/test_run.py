@@ -2,13 +2,15 @@ import dataclasses
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
+import re
 import pytest
 
 from digest.atom import Post
 from digest.classify import Item
+from digest.config import ROOT
 from digest.fetch import Response
 from digest.history import Viewed
-from digest.run import Deps, run
+from digest.run import Deps, _estimate_post_dt, run
 from digest.state import State, load, save
 from digest.__main__ import main
 
@@ -651,3 +653,341 @@ def test_cli_run_command(tmp_path: Path, monkeypatch):
     ret = main(["run", "--date", "2026-11-08"])
     assert ret == 0
     assert (digests_dir / "2026-11-08.md").is_file()
+
+
+def test_estimate_post_dt_from_id():
+    assert _estimate_post_dt("t3_1xrrvhr").date() == date(2026, 11, 9)
+    assert _estimate_post_dt("1rtak9o").date() == date(2026, 3, 14)
+    assert _estimate_post_dt("t3_ttkcit").year == 2022
+    # not real Reddit ids (test fixtures, too short)
+    assert _estimate_post_dt("t3_view_unique") is None
+    assert _estimate_post_dt("t3_p1") is None
+    assert _estimate_post_dt(None) is None
+
+
+def test_viewed_old_post_filtered_by_id_age(tmp_path: Path):
+    def fake_viewed(since: int, profile: Path, tmp: Path, **kw) -> tuple[list[Viewed], dict[str, int], int]:
+        views = [
+            Viewed(id="t3_ttkcit", sub="Piracy", title="Old 2022 post", url="https://reddit.com/r/Piracy/comments/ttkcit/", visited=1),
+            Viewed(id="t3_1xrrvhr", sub="sub3", title="Fresh post", url="https://reddit.com/r/sub3/comments/1xrrvhr/", visited=2),
+        ]
+        return views, {}, 2
+
+    deps = Deps(
+        get=lambda url: Response(status=200, headers={}, body=make_feed_xml([], sub="sub1")),
+        run_agy=lambda b, l: (0, ""),
+        viewed=fake_viewed,
+        feeds=[("f1", ["sub1"])],
+        work_dir=tmp_path / "work",
+        digests_dir=tmp_path / "digests",
+    )
+    content = run(today=date(2026, 11, 9), deps=deps).read_text(encoding="utf-8")
+
+    assert "id:t3_1xrrvhr" in content
+    assert "t3_ttkcit" not in content
+
+
+def test_run_hides_low_score_into_dropped_file(tmp_path: Path):
+    def fake_agy(brief: str, label: str):
+        reply = (
+            '{"id": "t3_p9", "section": "repo", "confidence": 0.95, "score": 9, "summary": "High post"}\n'
+            '{"id": "t3_p3", "section": "repo", "confidence": 0.95, "score": 3, "summary": "Low post"}\n'
+        )
+        return 0, reply
+
+    deps = Deps(
+        get=lambda url: Response(status=200, headers={}, body=make_feed_xml(["t3_p9", "t3_p3"], sub="sub1")),
+        run_agy=fake_agy,
+        feeds=[("f1", ["sub1"])],
+        work_dir=tmp_path / "work",
+        digests_dir=tmp_path / "digests",
+    )
+    digest_path = run(today=date(2026, 11, 9), deps=deps)
+    content = digest_path.read_text(encoding="utf-8")
+
+    assert "id:t3_p9" in content
+    assert "id:t3_p3" not in content
+
+    dropped_file = tmp_path / "work" / "dropped" / "2026-11-09.jsonl"
+    assert dropped_file.is_file()
+    dropped_lines = [json.loads(l) for l in dropped_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+    dropped_ids = {d["id"]: d for d in dropped_lines}
+    assert "t3_p3" in dropped_ids
+    assert dropped_ids["t3_p3"]["score"] == 3
+
+
+def test_run_skips_foreign_titles(tmp_path: Path):
+    received_ids: list[str] = []
+
+    def fake_agy(brief: str, label: str):
+        # find ids in brief / input
+        for m in re.finditer(r'"id":\s*"(t3_[^"]+)"', brief):
+            received_ids.append(m.group(1))
+        reply = '{"id": "t3_en", "section": "repo", "confidence": 0.9, "score": 9, "summary": "Good post"}\n'
+        return 0, reply
+
+    feed_xml = """<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>t3_ru</id>
+    <title>Помогите , как с чего начать?</title>
+    <link href="https://reddit.com/r/sub1/comments/ru"/>
+    <content type="html">&lt;p&gt;Russian body&lt;/p&gt;</content>
+    <updated>2026-11-08T12:00:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>t3_en</id>
+    <title>Awesome new dev tool for Python</title>
+    <link href="https://reddit.com/r/sub1/comments/en"/>
+    <content type="html">&lt;p&gt;English body&lt;/p&gt;</content>
+    <updated>2026-11-08T12:00:00+00:00</updated>
+  </entry>
+</feed>"""
+
+    deps = Deps(
+        get=lambda url: Response(status=200, headers={}, body=feed_xml),
+        run_agy=fake_agy,
+        feeds=[("f1", ["sub1"])],
+        work_dir=tmp_path / "work",
+        digests_dir=tmp_path / "digests",
+    )
+    digest_path = run(today=date(2026, 11, 9), deps=deps)
+    content = digest_path.read_text(encoding="utf-8")
+    print("CONTENT:", repr(content))
+    assert "id:t3_en" in content
+    assert "t3_ru" not in content
+    assert "t3_ru" not in received_ids
+
+    dropped_file = tmp_path / "work" / "dropped" / "2026-11-09.jsonl"
+    if dropped_file.is_file():
+        dropped_content = dropped_file.read_text(encoding="utf-8")
+        assert "t3_ru" not in dropped_content
+
+
+def _extract_ids_from_agy_brief(brief: str) -> list[str]:
+    m = re.search(r"Input:\s*(\S+)", brief)
+    if not m:
+        return []
+    rel_path = m.group(1).split("—")[0].strip()
+    path = ROOT / rel_path
+    if not path.is_file():
+        return []
+    ids = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            ids.append(json.loads(line)["id"])
+    return ids
+
+
+def test_run_two_pass_rescoring(tmp_path: Path, monkeypatch):
+    import digest.config
+    monkeypatch.setattr(digest.config, "SCREEN_TOP_K", 2)
+
+    p_ids = [f"t3_p{i}" for i in range(1, 6)]
+    screen_scores = [9, 8, 7, 6, 5]
+
+    def fake_screen(brief: str, label: str):
+        lines = [
+            f'{{"id": "{p_ids[i]}", "section": "repo", "confidence": 0.9, "score": {screen_scores[i]}, "summary": "P{i}"}}'
+            for i in range(5)
+        ]
+        return 0, "\n".join(lines)
+
+    high_received: list[str] = []
+
+    def fake_high(brief: str, label: str):
+        ids = _extract_ids_from_agy_brief(brief)
+        high_received.extend(ids)
+        lines = [
+            f'{{"id": "{pid}", "section": "repo", "confidence": 0.95, "score": 10, "summary": "Rescored"}}'
+            for pid in ids
+        ]
+        return 0, "\n".join(lines)
+
+    deps = Deps(
+        get=lambda url: Response(status=200, headers={}, body=make_feed_xml(p_ids, sub="sub1")),
+        run_agy=fake_high,
+        run_agy_screen=fake_screen,
+        viewed=lambda s, p, t, **kw: ([], {}, s),
+        feeds=[("f1", ["sub1"])],
+        work_dir=tmp_path / "work",
+        digests_dir=tmp_path / "digests",
+    )
+    digest_path = run(today=date(2026, 11, 9), deps=deps)
+    content = digest_path.read_text(encoding="utf-8")
+
+    assert high_received == ["t3_p1", "t3_p2"]
+    assert "id:t3_p1 section:repo score:10" in content
+    assert "id:t3_p2 section:repo score:10" in content
+    assert "id:t3_p3 section:repo score:7" in content
+
+
+def test_run_single_pass_when_screen_is_none(tmp_path: Path):
+    p_ids = ["t3_p1", "t3_p2"]
+    high_calls: list[str] = []
+
+    def fake_high(brief: str, label: str):
+        high_calls.extend(_extract_ids_from_agy_brief(brief))
+        return 0, '{"id": "t3_p1", "section": "repo", "confidence": 0.9, "score": 8, "summary": "P1"}'
+
+    deps = Deps(
+        get=lambda url: Response(status=200, headers={}, body=make_feed_xml(p_ids, sub="sub1")),
+        run_agy=fake_high,
+        run_agy_screen=None,
+        viewed=lambda s, p, t, **kw: ([], {}, s),
+        feeds=[("f1", ["sub1"])],
+        work_dir=tmp_path / "work",
+        digests_dir=tmp_path / "digests",
+    )
+    run(today=date(2026, 11, 9), deps=deps)
+    assert set(high_calls) == set(p_ids)
+
+
+def test_run_screen_failure_keeps_posts(tmp_path: Path):
+    p_ids = ["t3_fail1", "t3_fail2"]
+
+    def failing_screen(brief: str, label: str):
+        return 1, ""
+
+    def fake_high(brief: str, label: str):
+        return 0, '{"id": "t3_fail1", "section": "repo", "confidence": 0.9, "score": 8, "summary": "P1"}'
+
+    deps = Deps(
+        get=lambda url: Response(status=200, headers={}, body=make_feed_xml(p_ids, sub="sub1")),
+        run_agy=fake_high,
+        run_agy_screen=failing_screen,
+        viewed=lambda s, p, t, **kw: ([], {}, s),
+        feeds=[("f1", ["sub1"])],
+        work_dir=tmp_path / "work",
+        digests_dir=tmp_path / "digests",
+    )
+    digest_path = run(today=date(2026, 11, 9), deps=deps)
+    content = digest_path.read_text(encoding="utf-8")
+
+    assert "agy error" in content
+    assert "id:t3_fail1" in content
+    assert "id:t3_fail2" in content
+
+
+def test_run_failed_high_pass_keeps_screen_result(tmp_path: Path):
+    p_ids = ["t3_good"]
+
+    def fake_screen(brief: str, label: str):
+        return 0, '{"id": "t3_good", "section": "repo", "confidence": 0.9, "score": 8, "summary": "Screened"}'
+
+    def failing_high(brief: str, label: str):
+        return 1, ""
+
+    deps = Deps(
+        get=lambda url: Response(status=200, headers={}, body=make_feed_xml(p_ids, sub="sub1")),
+        run_agy=failing_high,
+        run_agy_screen=fake_screen,
+        viewed=lambda s, p, t, **kw: ([], {}, s),
+        feeds=[("f1", ["sub1"])],
+        work_dir=tmp_path / "work",
+        digests_dir=tmp_path / "digests",
+    )
+    digest_path = run(today=date(2026, 11, 9), deps=deps)
+    content = digest_path.read_text(encoding="utf-8")
+
+    assert "id:t3_good section:repo score:8" in content
+
+
+def test_run_screen_drop_not_sent_to_high_pass(tmp_path: Path):
+    p_ids = ["t3_drop1", "t3_keep1"]
+
+    def fake_screen(brief: str, label: str):
+        return 0, "\n".join([
+            '{"id": "t3_drop1", "section": "drop", "confidence": 0.95, "score": 1, "summary": "Spam"}',
+            '{"id": "t3_keep1", "section": "repo", "confidence": 0.95, "score": 9, "summary": "Good"}',
+        ])
+
+    high_received: list[str] = []
+
+    def fake_high(brief: str, label: str):
+        high_received.extend(_extract_ids_from_agy_brief(brief))
+        return 0, '{"id": "t3_keep1", "section": "repo", "confidence": 0.95, "score": 9, "summary": "Good"}'
+
+    deps = Deps(
+        get=lambda url: Response(status=200, headers={}, body=make_feed_xml(p_ids, sub="sub1")),
+        run_agy=fake_high,
+        run_agy_screen=fake_screen,
+        viewed=lambda s, p, t, **kw: ([], {}, s),
+        feeds=[("f1", ["sub1"])],
+        work_dir=tmp_path / "work",
+        digests_dir=tmp_path / "digests",
+    )
+    run(today=date(2026, 11, 9), deps=deps)
+
+    assert "t3_drop1" not in high_received
+    dropped_file = tmp_path / "work" / "dropped" / "2026-11-09.jsonl"
+    assert "t3_drop1" in dropped_file.read_text(encoding="utf-8")
+
+
+def test_run_high_pass_input_bounded_by_top_k(tmp_path: Path, monkeypatch):
+    import digest.config
+    monkeypatch.setattr(digest.config, "SCREEN_TOP_K", 3)
+
+    unscored_ids = [f"t3_u{i}" for i in range(5)]
+    scored_ids = [f"t3_s{i}" for i in range(5)]
+    all_ids = unscored_ids + scored_ids
+
+    def fake_screen(brief: str, label: str):
+        lines = []
+        # unscored posts: omitted or no score
+        for u in unscored_ids:
+            lines.append(f'{{"id": "{u}", "section": "other", "confidence": 0.5, "summary": "Unscored"}}')
+        for s in scored_ids:
+            lines.append(f'{{"id": "{s}", "section": "repo", "confidence": 0.9, "score": 9, "summary": "Scored"}}')
+        return 0, "\n".join(lines)
+
+    high_received: list[str] = []
+
+    def fake_high(brief: str, label: str):
+        high_received.extend(_extract_ids_from_agy_brief(brief))
+        return 0, ""
+
+    deps = Deps(
+        get=lambda url: Response(status=200, headers={}, body=make_feed_xml(all_ids, sub="sub1")),
+        run_agy=fake_high,
+        run_agy_screen=fake_screen,
+        viewed=lambda s, p, t, **kw: ([], {}, s),
+        feeds=[("f1", ["sub1"])],
+        work_dir=tmp_path / "work",
+        digests_dir=tmp_path / "digests",
+    )
+    run(today=date(2026, 11, 9), deps=deps)
+
+    assert len(high_received) == 3
+    assert all(pid in unscored_ids for pid in high_received)
+
+
+def test_run_high_pass_zero_or_neg_top_k(tmp_path: Path, monkeypatch):
+    import digest.config
+    monkeypatch.setattr(digest.config, "SCREEN_TOP_K", 0)
+
+    p_ids = ["t3_p1", "t3_p2"]
+
+    def fake_screen(brief: str, label: str):
+        return 0, '{"id": "t3_p1", "section": "repo", "confidence": 0.9, "score": 9, "summary": "P1"}'
+
+    high_received: list[str] = []
+
+    def fake_high(brief: str, label: str):
+        high_received.extend(_extract_ids_from_agy_brief(brief))
+        return 0, ""
+
+    deps = Deps(
+        get=lambda url: Response(status=200, headers={}, body=make_feed_xml(p_ids, sub="sub1")),
+        run_agy=fake_high,
+        run_agy_screen=fake_screen,
+        viewed=lambda s, p, t, **kw: ([], {}, s),
+        feeds=[("f1", ["sub1"])],
+        work_dir=tmp_path / "work",
+        digests_dir=tmp_path / "digests",
+    )
+    run(today=date(2026, 11, 9), deps=deps)
+
+    assert high_received == []
+
+
+

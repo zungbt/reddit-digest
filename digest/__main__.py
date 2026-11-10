@@ -1,6 +1,9 @@
 import argparse
-import sys
 from datetime import date
+import functools
+import sys
+
+from digest.classify import agy_run
 from digest.run import Deps, run
 
 
@@ -25,7 +28,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "run":
         d = args.date or date.today()
-        deps = Deps()
+        try:
+            deps = Deps(run_agy_screen=functools.partial(agy_run, level="low"))
+        except TypeError:
+            deps = Deps()
         digest_path = run(today=d, deps=deps)
         print(f"Digest generated: {digest_path}")
         return 0

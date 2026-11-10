@@ -15,6 +15,7 @@ def _make_item(
     section: str = "repo",
     summary: str = "Sample 1-sentence summary.",
     source: str = "followed",
+    score: int | None = None,
 ) -> Item:
     return Item(
         id=id,
@@ -25,6 +26,7 @@ def _make_item(
         section=section,
         summary=summary,
         source=source,
+        score=score,
     )
 
 
@@ -382,5 +384,92 @@ def test_read_marks_accepts_pathlib_path(tmp_path):
     marks = read_marks(p)
     assert len(marks) == 1
     assert marks[0].id == "t3_path1"
+
+
+def test_render_sorts_by_score_and_tags():
+    it7 = _make_item(id="t3_7", section="repo", score=7)
+    it9 = _make_item(id="t3_9", section="repo", score=9)
+    it_none = _make_item(id="t3_none", section="repo", score=None)
+    # Even if TOP_MIN_SCORE would catch 9, let's test within a section without Top ideas:
+    # (or when monkeypatching TOP_MIN_SCORE=11 so none goes to Top ideas)
+    from digest import config
+    rendered = render([it7, it_none, it9])
+    # 9 renders first, then 7, then none
+    pos9 = rendered.find("id:t3_9")
+    pos7 = rendered.find("id:t3_7")
+    pos_none = rendered.find("id:t3_none")
+    assert pos9 != -1 and pos7 != -1 and pos_none != -1
+    assert pos9 < pos7 < pos_none
+    assert "score:9" in rendered
+    assert "score:7" in rendered
+    assert "score:" not in rendered.split("id:t3_none")[1].split("-->")[0]
+    marks = read_marks(rendered)
+    mark_ids = [m.id for m in marks]
+    assert "t3_9" in mark_ids
+    assert "t3_7" in mark_ids
+    assert "t3_none" in mark_ids
+
+
+def test_render_top_ideas_block_first(monkeypatch):
+    from digest import config
+    it10 = _make_item(id="t3_10", score=10, section="repo")
+    it9 = _make_item(id="t3_9", score=9, section="knowledge")
+    it8 = _make_item(id="t3_8", score=8, section="repo")
+    rendered = render([it10, it9, it8])
+
+    assert "## Top ideas" in rendered
+    assert rendered.find("## Top ideas") < rendered.find("## From followed subs")
+    # 10 and 9 in Top ideas
+    top_block = rendered.split("## From followed subs")[0]
+    sec_block = rendered.split("## From followed subs")[1]
+    assert "id:t3_10" in top_block
+    assert "id:t3_9" in top_block
+    assert "id:t3_8" not in top_block
+    assert "id:t3_10" not in sec_block
+    assert "id:t3_9" not in sec_block
+    assert "id:t3_8" in sec_block
+
+    # TOP_N monkeypatched to 1 -> only 10 in Top ideas, 9 returns to its section
+    monkeypatch.setattr(config, "TOP_N", 1)
+    rendered2 = render([it10, it9, it8])
+    top_block2 = rendered2.split("## From followed subs")[0]
+    sec_block2 = rendered2.split("## From followed subs")[1]
+    assert "id:t3_10" in top_block2
+    assert "id:t3_9" not in top_block2
+    assert "id:t3_9" in sec_block2
+
+
+def test_render_no_top_block_without_high_scores():
+    it8 = _make_item(id="t3_8", score=8)
+    it_none = _make_item(id="t3_none", score=None)
+    rendered = render([it8, it_none])
+    assert "## Top ideas" not in rendered
+
+
+def test_top_item_marks_still_read_once():
+    it10 = _make_item(id="t3_top", score=10)
+    rendered = render([it10])
+    marked = rendered.replace("- [ ] **Sample Title**", "- [-] **Sample Title**")
+    marks = read_marks(marked)
+    top_marks = [m for m in marks if m.id == "t3_top"]
+    assert len(top_marks) == 1
+    assert top_marks[0].decision == "reject"
+
+
+def test_render_no_top_block_when_top_n_zero_or_negative(monkeypatch):
+    from digest import config
+    it10 = _make_item(id="t3_top10", score=10, section="repo")
+    
+    monkeypatch.setattr(config, "TOP_N", 0)
+    rendered_zero = render([it10])
+    assert "## Top ideas" not in rendered_zero
+    assert "id:t3_top10" in rendered_zero
+    assert "### Repo / Tool" in rendered_zero
+
+    monkeypatch.setattr(config, "TOP_N", -1)
+    rendered_neg = render([it10])
+    assert "## Top ideas" not in rendered_neg
+    assert "id:t3_top10" in rendered_neg
+
 
 

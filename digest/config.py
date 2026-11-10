@@ -4,6 +4,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORK: pathlib.Path = ROOT / "work"
 DIGESTS: pathlib.Path = ROOT / "digests"
 
+MIN_SCORE: int = 7
+MAX_PER_SUB: int = 15
+TOP_N: int = 10
+TOP_MIN_SCORE: int = 9
+FEWSHOT_N: int = 15
+SCREEN_TOP_K: int = 300
+
 FEEDS: list[tuple[str, list[str]]] = [
     ("LocalLLaMA", ["LocalLLaMA"]),
     ("LocalLLM", ["LocalLLM"]),
