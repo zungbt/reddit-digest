@@ -308,7 +308,7 @@ def test_second_run_applies_marks_from_first_digest(tmp_path: Path):
     # User marks day 1 digest
     d1_content = d1_path.read_text(encoding="utf-8")
     d1_modified = d1_content.replace(
-        "- [ ] **Title for t3_item1**", "- [x] **Title for t3_item1**"
+        "- [ ] **Title for t3_item1**", "- [s] **Title for t3_item1**"
     ).replace(
         "- [ ] **Title for t3_item2**", "- [-] **Title for t3_item2**"
     )
@@ -340,7 +340,7 @@ def test_second_run_applies_marks_from_first_digest(tmp_path: Path):
     fb_lines = [json.loads(line) for line in feedback_file.read_text(encoding="utf-8").strip().splitlines()]
 
     decisions = {item["id"]: item["decision"] for item in fb_lines}
-    assert decisions["t3_item1"] == "keep"
+    assert decisions["t3_item1"] == "save"
     assert decisions["t3_item2"] == "reject"
     assert decisions["t3_item3"] == "auto-drop"
 

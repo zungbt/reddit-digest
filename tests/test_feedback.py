@@ -4,7 +4,7 @@ import pathlib
 import pytest
 
 from digest.classify import Item
-from digest.feedback import Mark, apply
+from digest.feedback import Mark, apply, read_marks
 
 
 def _make_mark(
@@ -53,10 +53,10 @@ def test_apply_appends_keep_to_saved_md(tmp_path: pathlib.Path):
     day = datetime.date(2026, 11, 8)
 
     marks = [
-        _make_mark(id="t3_k1", title="Keep One", decision="keep"),
+        _make_mark(id="t3_k1", title="Keep One", decision="save"),
         _make_mark(id="t3_r1", title="Reject One", decision="reject"),
         _make_mark(id="t3_n1", title="Neutral One", decision="neutral"),
-        _make_mark(id="t3_k2", title="Keep Two", decision="keep"),
+        _make_mark(id="t3_k2", title="Keep Two", decision="save"),
     ]
 
     apply(marks, digest_day=day, saved=saved_file, log=log_file, dropped=[])
@@ -78,7 +78,7 @@ def test_apply_deduplicates_saved_md_if_run_twice(tmp_path: pathlib.Path):
     day = datetime.date(2026, 11, 8)
 
     marks = [
-        _make_mark(id="t3_k1", title="Keep One", decision="keep"),
+        _make_mark(id="t3_k1", title="Keep One", decision="save"),
     ]
 
     # First run
@@ -103,8 +103,8 @@ def test_apply_preserves_preexisting_saved_md(tmp_path: pathlib.Path):
     )
 
     marks = [
-        _make_mark(id="t3_old", title="Pre-existing Title", decision="keep"),
-        _make_mark(id="t3_new", title="New Title", decision="keep"),
+        _make_mark(id="t3_old", title="Pre-existing Title", decision="save"),
+        _make_mark(id="t3_new", title="New Title", decision="save"),
     ]
 
     apply(marks, digest_day=day, saved=saved_file, log=log_file, dropped=[])
@@ -119,7 +119,7 @@ def test_apply_appends_all_marks_and_auto_drops_to_feedback_jsonl(tmp_path: path
     day = datetime.date(2026, 11, 8)
 
     marks = [
-        _make_mark(id="t3_k1", sub="FPGA", section="career", title="Keep Job", decision="keep"),
+        _make_mark(id="t3_k1", sub="FPGA", section="career", title="Keep Job", decision="save"),
         _make_mark(id="t3_r1", sub="meme", section="other", title="Reject Meme", decision="reject"),
         _make_mark(id="t3_n1", sub="LocalLLaMA", section="repo", title="Neutral Tool", decision="neutral"),
     ]
@@ -140,7 +140,7 @@ def test_apply_appends_all_marks_and_auto_drops_to_feedback_jsonl(tmp_path: path
         "sub": "FPGA",
         "section": "career",
         "title": "Keep Job",
-        "decision": "keep",
+        "decision": "save",
     }
     assert lines[1] == {
         "date": "2026-11-08",
@@ -173,7 +173,7 @@ def test_feedback_jsonl_uses_digest_day_not_today(tmp_path: pathlib.Path):
     log_file = tmp_path / "feedback.jsonl"
     day = datetime.date(2026, 11, 1)  # A past date
 
-    marks = [_make_mark(id="t3_past", decision="keep")]
+    marks = [_make_mark(id="t3_past", decision="save")]
     apply(marks, digest_day=day, saved=saved_file, log=log_file, dropped=[])
 
     line = json.loads(log_file.read_text(encoding="utf-8").strip())
@@ -185,7 +185,7 @@ def test_apply_creates_nested_directories_if_missing(tmp_path: pathlib.Path):
     nested_log = tmp_path / "nested" / "other" / "feedback.jsonl"
     day = datetime.date(2026, 11, 8)
 
-    marks = [_make_mark(id="t3_nest", decision="keep")]
+    marks = [_make_mark(id="t3_nest", decision="save")]
     apply(marks, digest_day=day, saved=nested_saved, log=nested_log, dropped=[])
 
     assert nested_saved.exists()
@@ -232,11 +232,11 @@ def test_apply_deduplication_does_not_false_positive_on_id_prefix(tmp_path: path
     day = datetime.date(2026, 11, 8)
 
     # First save t3_1
-    m1 = _make_mark(id="t3_1", title="Title 1", decision="keep")
+    m1 = _make_mark(id="t3_1", title="Title 1", decision="save")
     apply([m1], digest_day=day, saved=saved_file, log=log_file, dropped=[])
 
     # Now save t3_10
-    m10 = _make_mark(id="t3_10", title="Title 10", decision="keep")
+    m10 = _make_mark(id="t3_10", title="Title 10", decision="save")
     apply([m10], digest_day=day, saved=saved_file, log=log_file, dropped=[])
 
     content = saved_file.read_text(encoding="utf-8")
@@ -252,8 +252,8 @@ def test_apply_duplicate_marks_in_single_call(tmp_path: pathlib.Path):
     day = datetime.date(2026, 11, 8)
 
     # Two identical keep marks in the same batch
-    m1 = _make_mark(id="t3_dup", title="Dup Title", decision="keep")
-    m2 = _make_mark(id="t3_dup", title="Dup Title", decision="keep")
+    m1 = _make_mark(id="t3_dup", title="Dup Title", decision="save")
+    m2 = _make_mark(id="t3_dup", title="Dup Title", decision="save")
 
     apply([m1, m2], digest_day=day, saved=saved_file, log=log_file, dropped=[])
 
@@ -273,7 +273,7 @@ def test_apply_preserves_log_without_trailing_newline(tmp_path: pathlib.Path):
     # Pre-existing entry missing a trailing newline
     log_file.write_text('{"id":"t3_prev","decision":"neutral"}', encoding="utf-8")
 
-    m = _make_mark(id="t3_next", title="Next", decision="keep")
+    m = _make_mark(id="t3_next", title="Next", decision="save")
     apply([m], digest_day=day, saved=saved_file, log=log_file, dropped=[])
 
     raw_lines = log_file.read_text(encoding="utf-8").strip().splitlines()
@@ -291,7 +291,7 @@ def test_apply_deduplication_saved_md_no_space_before_comment_close(tmp_path: pa
     # Pre-existing line formatted with <!-- id:t3_nospace-->
     saved_file.write_text("- [x] **Title** — [post](u) `r/sub` <!-- id:t3_nospace-->\n", encoding="utf-8")
 
-    m = _make_mark(id="t3_nospace", title="Title", decision="keep")
+    m = _make_mark(id="t3_nospace", title="Title", decision="save")
     apply([m], digest_day=day, saved=saved_file, log=log_file, dropped=[])
 
     content = saved_file.read_text(encoding="utf-8")
@@ -303,7 +303,7 @@ def test_apply_canonicalizes_sections_in_feedback_and_saved(tmp_path: pathlib.Pa
     log_file = tmp_path / "feedback.jsonl"
     day = datetime.date(2026, 11, 8)
 
-    m = _make_mark(id="t3_sec1", section="qa-tools", decision="keep")
+    m = _make_mark(id="t3_sec1", section="qa-tools", decision="save")
     d = _make_item(id="t3_sec2", section="Drop", title="D")
     apply([m], digest_day=day, saved=saved_file, log=log_file, dropped=[d])
 
@@ -319,7 +319,7 @@ def test_apply_extracts_date_from_path_or_filename_string(tmp_path: pathlib.Path
     saved_file = tmp_path / "saved.md"
     log_file = tmp_path / "feedback.jsonl"
 
-    m = _make_mark(id="t3_path_date", decision="keep")
+    m = _make_mark(id="t3_path_date", decision="save")
     apply([m], digest_day="digests/2026-11-08.md", saved=saved_file, log=log_file, dropped=[])
 
     log_entry = json.loads(log_file.read_text(encoding="utf-8").strip())
@@ -331,10 +331,35 @@ def test_apply_ignores_empty_or_whitespace_ids(tmp_path: pathlib.Path):
     log_file = tmp_path / "feedback.jsonl"
     day = datetime.date(2026, 11, 8)
 
-    m = _make_mark(id="   ", decision="keep")
+    m = _make_mark(id="   ", decision="save")
     apply([m], digest_day=day, saved=saved_file, log=log_file, dropped=[])
 
     assert saved_file.read_text(encoding="utf-8") == ""
     assert log_file.read_text(encoding="utf-8") == ""
 
 
+
+
+def test_read_marks_parses_save_box():
+    md = (
+        "- [s] **A** — [post](https://r.com/a) `r/x` <!-- id:t3_a section:repo -->\n"
+        "- [S] **B** — [post](https://r.com/b) `r/x` <!-- id:t3_b section:repo -->\n"
+        "- [x] **C** — [post](https://r.com/c) `r/x` <!-- id:t3_c section:repo -->\n"
+    )
+    assert [m.decision for m in read_marks(md)] == ["save", "save", "keep"]
+
+
+def test_apply_keep_is_not_written_to_saved_md(tmp_path: pathlib.Path):
+    saved_file = tmp_path / "saved.md"
+    log_file = tmp_path / "feedback.jsonl"
+    marks = [
+        _make_mark(id="t3_keep", title="Interesting", decision="keep"),
+        _make_mark(id="t3_save", title="Worth saving", decision="save"),
+    ]
+    apply(marks, digest_day=datetime.date(2026, 11, 8), saved=saved_file, log=log_file, dropped=[])
+
+    content = saved_file.read_text(encoding="utf-8")
+    assert "t3_save" in content
+    assert "t3_keep" not in content
+    decisions = [json.loads(l)["decision"] for l in log_file.read_text(encoding="utf-8").splitlines()]
+    assert decisions == ["keep", "save"]

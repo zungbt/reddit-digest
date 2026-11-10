@@ -13,7 +13,6 @@ SCREEN_TOP_K: int = 300
 
 FEEDS: list[tuple[str, list[str]]] = [
     ("LocalLLaMA", ["LocalLLaMA"]),
-    ("LocalLLM", ["LocalLLM"]),
     ("ClaudeCode", ["ClaudeCode"]),
     ("ClaudeAI", ["ClaudeAI"]),
     ("local-ai", ["DeepSeek", "Qwen_AI"]),

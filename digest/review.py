@@ -39,6 +39,8 @@ def summarize(lines: list[dict[str, Any]], today: date | None = None) -> str:
         sec = _canonical_section(entry.get("section", "other"))
         title = " ".join(str(entry.get("title", "")).split())
         decision = str(entry.get("decision", "neutral")).strip().lower()
+        if decision == "save":
+            decision = "keep"
         if decision not in ("keep", "reject", "neutral", "auto-drop"):
             decision = "neutral"
 

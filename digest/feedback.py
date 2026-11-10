@@ -40,7 +40,8 @@ def read_marks(md: str | pathlib.Path | None) -> list[Mark]:
     
     Identifies items by the `<!-- id:... section:... -->` tag.
     Parses checkboxes:
-      [x] or [X] -> "keep"
+      [x] or [X] -> "keep"   (interesting; few-shot signal only)
+      [s] or [S] -> "save"   (worth keeping; also copied to saved.md)
       [-]        -> "reject"
       [ ]        -> "neutral"
     Ignores lines without an id tag. Returns [] if md is empty or None.
@@ -85,11 +86,13 @@ def read_marks(md: str | pathlib.Path | None) -> list[Mark]:
         section = _canonical_section(m_sec.group(1).strip()) if m_sec else "other"
 
         # Checkbox decision at the beginning of the item (or after a leading comment)
-        m_box = re.search(r"(?:^|-->)\s*(?:[-*+]|\d+\.)?\s*\[\s*([xX\-\s]?)\s*\]", line_str)
+        m_box = re.search(r"(?:^|-->)\s*(?:[-*+]|\d+\.)?\s*\[\s*([xXsS\-\s]?)\s*\]", line_str)
         if m_box:
             mark_char = m_box.group(1).strip().lower()
             if mark_char == "x":
                 decision = "keep"
+            elif mark_char == "s":
+                decision = "save"
             elif mark_char == "-":
                 decision = "reject"
             else:
@@ -151,7 +154,7 @@ def apply(
 ) -> None:
     """Apply marked decisions from a digest:
     
-    1. Append "keep" items to saved.md (deduplicated by id).
+    1. Append "save" items to saved.md (deduplicated by id).
     2. Append every mark and every dropped item ("auto-drop") to feedback.jsonl
        with format {date, id, sub, section, title, decision}.
     """
@@ -173,7 +176,7 @@ def apply(
     if not log_path.exists():
         log_path.touch()
 
-    # 1. Deduplicate and append keep marks to saved.md
+    # 1. Deduplicate and append save marks to saved.md
     existing_content = saved_path.read_text(encoding="utf-8")
     existing_ids = {
         m.group(1).rstrip("-;,").strip().lower()
@@ -199,11 +202,11 @@ def apply(
             sub = raw_sub.lstrip("/").removeprefix("r/").strip()
             section = _canonical_section(getattr(mark, "section", "other"))
 
-        if decision == "keep" and m_id:
+        if decision == "save" and m_id:
             if m_id.lower() not in existing_ids:
                 existing_ids.add(m_id.lower())
                 new_saved_lines.append(
-                    f"- [x] **{title}** — [post]({url}) `r/{sub}` <!-- id:{m_id} section:{section} -->\n"
+                    f"- [s] **{title}** — [post]({url}) `r/{sub}` <!-- id:{m_id} section:{section} -->\n"
                 )
 
     if new_saved_lines:
@@ -238,7 +241,7 @@ def apply(
             continue
         seen_feedback_ids.add(m_id.lower())
 
-        if decision not in ("keep", "reject", "neutral"):
+        if decision not in ("keep", "save", "reject", "neutral"):
             decision = "neutral"
 
         feedback_entries.append(

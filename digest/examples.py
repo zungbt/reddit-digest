@@ -34,7 +34,7 @@ def feedback_examples(path: pathlib.Path, n: int = FEWSHOT_N) -> str:
             continue
 
         decision = data.get("decision")
-        if decision not in ("reject", "keep"):
+        if decision not in ("reject", "keep", "save"):
             continue
 
         raw_sub = str(data.get("sub") or "").strip()
@@ -44,7 +44,7 @@ def feedback_examples(path: pathlib.Path, n: int = FEWSHOT_N) -> str:
 
         if decision == "reject":
             rejects.append(f"REJECT | r/{sub} | {clean_title}")
-        elif decision == "keep":
+        elif decision in ("keep", "save"):
             keeps.append(f"KEEP | r/{sub} | {clean_title}")
 
     selected = (rejects[-n:] if n > 0 else []) + (keeps[-n:] if n > 0 else [])

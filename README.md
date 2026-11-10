@@ -4,12 +4,13 @@ A nightly personal digest tool that pulls new posts from followed subreddits (vi
 
 ## Features
 
-- **Followed Subreddits (RSS)**: Pulls newest posts across 13 feeds (4 solo, 9 multi-sub combinations) using Cloudflare DNS-over-HTTPS (DoH) via `curl.exe`.
+- **Followed Subreddits (RSS)**: Pulls newest posts across 12 feeds (3 solo, 9 multi-sub combinations) using Cloudflare DNS-over-HTTPS (DoH) via `curl.exe`.
 - **Waterfox History Integration**: Safely reads `/r/*/comments/*` visits from a copied temporary SQLite database to include posts you actually visited.
 - **AI Classification**: Leverages Gemini (`agy low`) to organize posts into ranked categories (`Repo / Tool`, `Project / Showcase`, `Useful knowledge`, `Money / content with AI`, `IT career / abroad`, `Game`, `Q&A about my tools`, `Other`), filtering noise and auto-dropping spam.
 - **Scoring & Two-Pass Triage**: Posts are scored 0–10 based on substance and relevance. A fast screening pass (`agy low` with truncated bodies) evaluates all followed posts, followed by a high pass (`agy high`) on up to `SCREEN_TOP_K` (300) top candidates. Posts below `MIN_SCORE` (7) are hidden into `work/dropped/` and each subreddit is capped at `MAX_PER_SUB` (15) posts. Standout posts (`score >= 9`) lead the digest under `## Top ideas`, and past keep/reject marks from `work/feedback.jsonl` are injected as few-shot examples into the prompt.
 - **Feedback & Learning**:
-  - `[x]` / `[X]` **Keep**: Automatically collected and deduplicated into `work/saved.md`.
+  - `[x]` / `[X]` **Keep** (interesting): Used as a positive few-shot example only.
+  - `[s]` / `[S]` **Save** (worth keeping): Also collected and deduplicated into `work/saved.md`.
   - `[-]` **Reject**: Logged to `work/feedback.jsonl`.
   - `[ ]` **Neutral**: Left untouched.
 - **Review & Drop Rule Proposals**: `python -m digest review` summarizes engagement and proposes drop rules for high-reject, zero-keep groups.
@@ -42,11 +43,12 @@ Output is written to `digests/YYYY-MM-DD.md`. Dropped items for the run are arch
 ### 2. Marking Digests
 
 Open `digests/YYYY-MM-DD.md` in any markdown editor or viewer and mark checkboxes:
-- `- [x]` to save a post.
+- `- [x]` to mark a post as interesting (taste signal only).
+- `- [s]` to save a post to `work/saved.md`.
 - `- [-]` to mark a post as rejected.
 - `- [ ]` to leave a post as neutral.
 
-On the next run, marked decisions are processed automatically: keeps are appended to `work/saved.md` and feedback records are written to `work/feedback.jsonl`.
+On the next run, marked decisions are processed automatically: saves are appended to `work/saved.md` and feedback records are written to `work/feedback.jsonl`.
 
 ### 3. Reviewing Feedback
 

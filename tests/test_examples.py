@@ -54,3 +54,9 @@ def test_examples_limits_to_n_most_recent(tmp_path: Path):
     # Last 15: 25 to 39
     assert out_lines[0] == "REJECT | r/sub | Title 25"
     assert out_lines[-1] == "REJECT | r/sub | Title 39"
+
+
+def test_examples_save_counts_as_keep(tmp_path: Path):
+    p = tmp_path / "feedback.jsonl"
+    p.write_text(json.dumps({"id": "t3_s", "sub": "esp32", "title": "Saved one", "decision": "save"}) + "\n", encoding="utf-8")
+    assert "KEEP | r/esp32 | Saved one" in feedback_examples(p)

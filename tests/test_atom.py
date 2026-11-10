@@ -66,12 +66,11 @@ def test_body_has_no_table_text(parsed_posts: list[atom.Post]):
 
 
 def test_feed_config():
-    assert len(config.FEEDS) == 13
+    assert len(config.FEEDS) == 12
 
     expected_subs = {
         # solo
         "LocalLLaMA",
-        "LocalLLM",
         "ClaudeCode",
         "ClaudeAI",
         # multi: local AI
@@ -144,7 +143,6 @@ def test_feed_config():
 
     expected_feed_names = [
         "LocalLLaMA",
-        "LocalLLM",
         "ClaudeCode",
         "ClaudeAI",
         "local-ai",
