@@ -57,7 +57,7 @@ def curl_get(url: str) -> Response:
             "--doh-url",
             "https://cloudflare-dns.com/dns-query",
             "-A",
-            "reddit-digest/0.1",
+            "reddit-digest:v1.0 (by /u/Adventurous_Eye_6199)",
             "-D",
             "-",
             "-o",

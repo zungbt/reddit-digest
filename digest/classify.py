@@ -67,7 +67,7 @@ SECTION_ALIASES: dict[str, str] = {
 
 BATCH_SIZE = 50
 AGY_LEVEL = "high"
-MAX_WORKERS = 3
+MAX_WORKERS = 5
 CALIB_BRIEF_PATH = ROOT / "docs" / "calib-brief.txt"
 AGY_SCRIPT = pathlib.Path.home() / ".claude" / "skills" / "agy" / "agy-run-win.sh"
 
